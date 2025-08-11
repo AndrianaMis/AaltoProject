@@ -3,6 +3,7 @@ from visualize import plot_surface_code_lattice
 import stim
 import stim
 import numpy as np
+from noise_injection import mask_generator
 
 # # Build your circuit
 # d = 5
@@ -58,7 +59,7 @@ import numpy as np
 
 # Generate the rotated surface code circuit:
 distance = 3
-rounds = 1
+rounds = 10
 circuit = stim.Circuit.generated(
     "surface_code:rotated_memory_x",
     rounds=rounds,
@@ -69,16 +70,17 @@ circuit = stim.Circuit.generated(
 )
 mr_indices = [i for i, instr in enumerate(circuit) if instr.name == 'MR']
 for mr in mr_indices:
-    circuit.insert(mr, stim.CircuitInstruction('CORRELATED_ERROR',  [stim.target_x(5), stim.target_y(3)], [0.2]))
+    print(f'mr: {mr}')
+    circuit.insert(mr, stim.CircuitInstruction('CORRELATED_ERROR',  [stim.target_x(1), stim.target_y(1)], [0.5]))
 
 
-print(circuit.detector_error_model())
+# print(circuit.detector_error_model())
 # Compile for fast sampling:
 sampler = stim.CompiledDetectorSampler(circuit)
 print(f'Total qubits: {circuit.num_qubits} \t Total TICKS: {circuit.num_ticks} \t Total detectors:{circuit.num_detectors} \t Total Measurements: {circuit.num_measurements} \t Total observables: {circuit.num_observables}')
 
 # Sample a batch of detection event outcomes:
-shots = 5
+shots = 2
 stbs=circuit.num_detectors //rounds
 result = sampler.sample(shots)  # Result has shape (shots, detectors_per_shot)
 res=result.reshape((shots, rounds, stbs))
@@ -91,7 +93,7 @@ for r in range(rounds):
         print("  X stabilizers:", x_syndromes)
         print("  Z stabilizers:", z_syndromes)
 
-#print(circuit)
+print(circuit)
 
 
 print(mr_indices)
@@ -111,8 +113,63 @@ sim = stim.FlipSimulator(
 #         pauli = mask[q, t]
 #         if pauli:
 #             sim.set_pauli_flip(pauli, qubit_index=q, instance_index=t)
-for t in range(rounds):
-    print(f"Round {t}: {sim.peek_pauli_flips(instance_index=t)}")
+# for t in range(rounds):
+#     print(f"Round {t}: {sim.peek_pauli_flips(instance_index=t)}")
+
+
+
+
+# print(circuit.num_qubits)
+# coords = list(circuit.get_final_qubit_coordinates().items())
+# print(coords)
+# print(f'All qubits are: {len(coords)}')
+# data_qubit_indices = [q for q, (x, y) in coords if (x + y) % 2 == 0]
+# print(f'Data qubits ({len(data_qubit_indices)}) indices:{data_qubit_indices}')
+
+
+# print(f'Data qubits ({len(data)}): {data}\n Anchillas: {anc}\n All qubits: {coor}')
+
+
+
+
+def get_data_and_ancilla_ids_by_parity(circuit: stim.Circuit, distance: int):
+    # 1) coords: dict {qid: (x, y)}
+    coords = circuit.get_final_qubit_coordinates()
+    qids, xy = zip(*coords.items())
+    qids = np.array(qids, dtype=int)
+    xy = np.array(xy, dtype=int)  # shape (N, 2)
+
+    x, y = xy[:, 0], xy[:, 1]
+    both_even = (x % 2 == 0) & (y % 2 == 0)
+    both_odd  = (x % 2 == 1) & (y % 2 == 1)
+
+    cand_even = qids[both_even]
+    cand_odd  = qids[both_odd]
+
+    d2 = distance * distance
+    if len(cand_even) == d2 and len(cand_odd) != d2:
+        data_ids = np.sort(cand_even)
+    elif len(cand_odd) == d2 and len(cand_even) != d2:
+        data_ids = np.sort(cand_odd)
+    else:
+        # Fallback: pick the parity with size closest to d^2
+        # (useful if Stim changes internals; still deterministic)
+        if abs(len(cand_even) - d2) <= abs(len(cand_odd) - d2):
+            data_ids = np.sort(cand_even)
+        else:
+            data_ids = np.sort(cand_odd)
+
+    ancilla_ids = np.array(sorted(set(qids) - set(data_ids)), dtype=int)
+    return data_ids.tolist(), ancilla_ids.tolist()
+
+
+d,a=get_data_and_ancilla_ids_by_parity(circuit, 3)
+print(f'\n\nDistance: {distance}\nData qubits ({len(d)}): {d}\nAnchillas ({len(a)}): {a}')
+
+
+###!!!!!!!!!!!!!!!!!!Dont forget to map data qubits to 0-d²-1 !!!!!!!!! 
+
+M=mask_generator(qubits=len(d), rounds=rounds, datas=d, spatial_one_round=True, temporal_one_qubit=True)
 
 # !!!!!!!  This is how we will be able to combine the encoding circuits, once provided, that initalize a logical state, with the already existing circuits of STIM
 # def logical_state_prep() -> stim.Circuit:
