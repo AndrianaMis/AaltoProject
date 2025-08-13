@@ -34,6 +34,8 @@ def spatial_clusters(
     rad: int = 1,             # 1D neighborhood radius around a seed
     wrap: bool = False,       # treat qubits as a ring if True; else clamp at edges
     pr_to_neigh=0.3,
+    pX=0.5,
+    pZ=0.4,
     rng: np.random.Generator | None = None,
 ) -> tuple[np.ndarray, List[Tuple[int, np.ndarray]]]:
     """
@@ -52,6 +54,7 @@ def spatial_clusters(
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
 
     events: List[Tuple[int, np.ndarray]] = []
+    print('------------------ Injecting spatial cluster correlations -------------------------------\n\n')
 
     for t in range(rounds):
         ran=rng.random()
@@ -82,7 +85,8 @@ def spatial_clusters(
 
                 
                 print(f'Neighbors within radius {rad} on round {t} are: {neigh} and we must add noise with pr to each of them')
-                m[seed, t]=-1
+                pauli_code = sample_pauli_code(rng, pX, pZ)
+                m[seed, t]=pauli_code
                 chosen=[]
                 chosen.append(seed)
                 for n in neigh:
@@ -90,7 +94,7 @@ def spatial_clusters(
                     if rng.random()< pr_to_neigh:
                         chosen.append(n)
                         print(f'Adding noise to neighbor: {n}')
-                        m[n, t] = -1  # mark occupancy (assign Pauli later)
+                        m[n, t] = pauli_code  # mark occupancy (assign Pauli later)
 
                 #the cluster
                 events.append((t, np.array(chosen.copy())))
@@ -117,15 +121,16 @@ def spatial_clusters(
 #2. We will generate temporal errors on a streak model, so a single qubit will have a specific error with pr on streak length l that will be initlized with geometric distribution 
 
 
+##Keep in mind that Depolizing noise model: inject X,Z,Y errors with fixed probabilty. 
+#But in order to model realistic quantum hardware model, we have to inject onyl X,Z errors and if they collide, then turn it into a Y
 
-
-def sample_pauli_code(rng: np.random.Generator, pX: float, pZ: float, pY: float) -> int:
+def sample_pauli_code(rng: np.random.Generator, pX: float, pZ: float) -> int:
     """
     Draw a single Pauli for the whole streak. Must be exclusive.
     """
-    probs = np.array([pX, pZ, pY], dtype=float)
+    probs = np.array([pX, pZ], dtype=float)
     probs = probs / probs.sum()
-    choice = rng.choice([1, 2, 3], p=probs)   # 1:X, 2:Z, 3:Y
+    choice = rng.choice([1, 2], p=probs)   # 1:X, 2:Z, 3:Y
     return choice
 
 
@@ -179,7 +184,7 @@ def temporal_streaks_single_qubit(
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
 
     streaks: List[Tuple[int, int, int, int]] = []
-
+    print('------------------ Injecting Temporal one-qubit correlations -------------------------------\n\n')
     for qi in range(qus):
         t = 0
 
@@ -196,7 +201,7 @@ def temporal_streaks_single_qubit(
                 L = sample_geometric_len(rng, gamma, max_len) 
                 print(f'Sampled streak length l: {L}')
                 L+=1
-                pauli_code = sample_pauli_code(rng, pX, pZ, pY)
+                pauli_code = sample_pauli_code(rng, pX, pZ)
                 print(f'The pauli we will apply: {pauli_code}')
                 
                 L_eff = 0
@@ -204,22 +209,26 @@ def temporal_streaks_single_qubit(
                 for dt in range(L):
                     tt = t + dt
                     if tt >= rounds:
-                        break
-                    if m[qi, tt] != 0:        # do not overwrite clusters
-                        break
+                        break     
+                    current = m[qi, tt]
+                    if current == 0:       
+                        m[qi, tt] = pauli_code
+                    elif (current, pauli_code) in [(1, 2), (2, 1)]:  # X then Z or Z then X                  
+                        m[qi, tt] = 3
+                        
                     print(f'Injecting error in round {tt} ')
-                    m[qi, tt] = pauli_code
+                   
                     L_eff += 1
 
                 if L_eff > 0:
-                    streaks.append((qi, t, L_eff, pauli_code))
+                    streaks.append((t, qi, L_eff, pauli_code))
                     t += L_eff
                 else:
                     # couldn't place (occupied immediately); move on
                     t += 1
             else:
                 t += 1
-
+    
     return m, streaks
 
 
@@ -244,6 +253,8 @@ def extend_clusters(
     clusters:List[Tuple[int, np.ndarray]] = [],  #(round, (qubits affected))
     p_start: float = 0.2,         # chance to *start* a streak when free
     gamma: float = 0.6  ,
+    pX=0.5,
+    pZ=0.4,
     rng: np.random.Generator | None = None,
     max_len: Optional[int] = None
 
@@ -253,7 +264,8 @@ def extend_clusters(
         rng = np.random.default_rng()
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
     streaks: List[Tuple[List[Tuple[int, np.ndarray]], int, int]] = []    #[(cluster), length, -2]
-    
+    print('------------------ Extending Clusters correlations -------------------------------\n\n')
+
     for cluster in clusters:
         print(f'\nChecking cluster: {cluster}')
         r, cl_qus=cluster
@@ -263,16 +275,21 @@ def extend_clusters(
                 L = sample_geometric_len(rng, gamma, max_len) 
                 print(f'Sampled streak length l: {L}')
                 L+=1
-                    
+                pauli_code = sample_pauli_code(rng, pX, pZ)
+
                 L_eff = 0
                 # fill until we hit an occupied cell or run out of rounds
                 for dt in range(L):
                     tt = r + dt
                     if tt >= rounds:
                         break
-                    frees=[q for q in cl_qus if m[q,tt]==0]
-                    for q in frees:
-                        m[q,tt]=-2
+                    for q in cl_qus:
+                        current = m[q, tt]
+                        if current == 0:       
+                            m[q, tt] = pauli_code
+                        elif (current, pauli_code) in [(1, 2), (2, 1)]:  # X then Z or Z then X                  
+                            m[q, tt] = 3
+                            
                     print(f'Injecting error in round {tt} ')
                     L_eff += 1
 
@@ -410,24 +427,38 @@ def mask_generator(qubits:int, rounds:int, qubits_ind: List,  spatial_one_round:
         print('\n')
         for event in clusters:
             print(f'Event---Cluster: {event}')   #mask, (round, (qubits affected))
+        print('\n--------------------------Finished injecting spatial cluster correlations ------------------')
+
+        print(f'\nMask M0 after spatial Correlations: \n{m}\n\n')
 
     if temporal_one_qubit:
         m, streaks=temporal_streaks_single_qubit(m=m, qus=qubits, rounds=rounds)    #mask, ((qubit, round, streak length, pauli code))
         print('\n')
         for streak in streaks:
             print(f'Event---Streak: {streak}')
+        print('\n--------------------------Finished injecting Temporal one-qubit correlations ------------------')
+        print(f'\nMask M0 after temporal Correlations:\n{m}\n\n')
+
     if spatio_temporal:
         if spatial_clusters:
 
             extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters)
+
         else:
             m,clusters=spatial_clusters(m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind, probab=0.2, wrap=False, rad=2, pr_to_neigh=0.4)
             print('\n')
             for event in clusters:
                 print(f'Event---Cluster: {event}')   #mask, (round, (qubits affected))
+            
+            print('\n--------------------------Finished injecting spatial cluster correlations ------------------')
+
+
             extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters)
+        print('\n--------------------------Finished extending clusters correlations ------------------')
+        print(f'\nMask M0 after cluster extensions:\n{m}\n\n')
+
     if multi_qubit_temporal:
         multi_qubit_multi_round(m=m, qus=qubits, rounds=rounds)
-    print(f'\nMask:\n {m}')
+    print(f'\nFinal Mask M0:\n{m}')
     return m
 

@@ -12,3 +12,8 @@ Collected info on FLipSImulator -began mask generation - used STIM's CORRELATED 
 ## 11/08/25:
 
 Mask Generation: spatial-clusters ----> Done!   ,   temporal-one_qubit ----> Done!  , spatio_temporal-extend_clusters  -----> In progress
+
+
+## 13/08/25:
+
+Mask generation: CHose physical nosie channel, got rid of depolarizing-like features (iinjecting Y errors). Now, X+Z=Y
