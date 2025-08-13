@@ -7,7 +7,7 @@ I, X, Z, Y = 0, 1, 2, 3
 #First of all, intialize the mask
 def mask_init(qubits: int, rounds:int):
     mask=np.zeros((qubits, rounds), dtype=int)
-    print('\nError Mask Initialized!\n')
+    print('\n\n\nError Mask Initialized!\n')
     return mask
 
 PAULI_TO_CODE: Dict[str, int] = {"X": 1, "Z": 2, "Y": 3}
@@ -229,7 +229,7 @@ def temporal_streaks_single_qubit(
 
 
 #------------------------------------------------------------------------------------------------------------------#
-
+#It does work i think but i have made it putting -2 on the mask just so i know whats happening
 
 
 
@@ -241,37 +241,193 @@ def extend_clusters(
     m: np.ndarray,
     qus: int,
     rounds: int,
-    clusters:List[Tuple[int, np.ndarray]] = []
-     ):
+    clusters:List[Tuple[int, np.ndarray]] = [],  #(round, (qubits affected))
+    p_start: float = 0.2,         # chance to *start* a streak when free
+    gamma: float = 0.6  ,
+    rng: np.random.Generator | None = None,
+    max_len: Optional[int] = None
+
+     )-> tuple[np.ndarray, List[Tuple[List[Tuple[int, np.ndarray]], int, int]]]:
     
+    if rng is None:
+        rng = np.random.default_rng()
+    assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
+    streaks: List[Tuple[List[Tuple[int, np.ndarray]], int, int]] = []    #[(cluster), length, -2]
+    
+    for cluster in clusters:
+        print(f'\nChecking cluster: {cluster}')
+        r, cl_qus=cluster
+
+        if rng.random() < p_start:  
+                print(f'We are gonna extend cluster {cluster}')
+                L = sample_geometric_len(rng, gamma, max_len) 
+                print(f'Sampled streak length l: {L}')
+                L+=1
+                    
+                L_eff = 0
+                # fill until we hit an occupied cell or run out of rounds
+                for dt in range(L):
+                    tt = r + dt
+                    if tt >= rounds:
+                        break
+                    frees=[q for q in cl_qus if m[q,tt]==0]
+                    for q in frees:
+                        m[q,tt]=-2
+                    print(f'Injecting error in round {tt} ')
+                    L_eff += 1
+
+                if L_eff > 0:
+                    strr=[cluster, L_eff, -2]
+                    streaks.append(strr)
+                    #r += L_eff
+    return m, streaks      
+       
+
+
+
+
+
+# ------------------------------------------------------------------------------------------------------#
+                
+        
+
+
 
 
 
 
 #4. Multi-qubit temporal errors, not nearest neighbors, not on continuoius streaks 
 
+def multi_qubit_multi_round(
+    m: np.ndarray,
+    qus: int,
+    rounds: int,
+    *,
+    group_size: int = 3,       # how many qubits in each correlated group
+    p_event: float = 0.2,     # probability of starting an event for a given group
+    gamma: float = 0.5,        # continuation probability for the streak length
+    max_len: Optional[int] = None,
+    pX: float = 0.33, pZ: float = 0.33, pY: float = 0.34,
+    rng: np.random.Generator | None = None
+) -> tuple[np.ndarray, list]:
+    """
+    Multi-qubit, multi-round correlated streaks (Detrimental.pdf style #4).
+
+    Steps:
+      1. Partition qubits into groups of `group_size` (can overlap if desired).
+      2. For each group, at each potential start round, start a streak with probability `p_event`.
+      3. Sample streak length from geometric distribution with parameter gamma.
+      4. Assign *same* Pauli to all qubits in group for all rounds in streak.
+      5. Do not overwrite any pre-existing nonzero entries in m.
+
+    Returns:
+      m: updated mask (0=I,1=X,2=Z,3=Y)
+      events: list of (group_qubits, start_round, length, pauli_code)
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    assert m.shape == (qus, rounds)
+
+    events = []
+
+    # Step 1: create groups
+    groups = []
+    for start in range(0, qus, group_size):
+        group = list(range(start, min(start + group_size, qus)))
+        if len(group) > 1:
+            groups.append(group)
+    print(f'We have made {len(groups)} groups')
+    # Step 2: iterate over groups and possible start times
+    for g in groups:
+        t = 0
+        while t < rounds:
+            if rng.random() < p_event:
+                # Step 3: choose streak length
+                L = sample_geometric_len(rng, gamma, max_len)
+
+                # Step 4: choose Pauli for the whole streak
+                pauli_code = sample_pauli_code(rng, pX, pZ, pY)
+
+                # Step 5: inject if free
+                L_eff = 0
+                for dt in range(L):
+                    tt = t + dt
+                    if tt >= rounds:
+                        break
+                    # check if all positions in group at this round are free
+                    free_qubits = [q for q in g if m[q, tt] == 0]
+                    if not free_qubits:
+                        break
+                    for q in free_qubits:
+                        m[q, tt] = pauli_code
+                    L_eff += 1
+
+                if L_eff > 0:
+                    events.append((g, t, L_eff, pauli_code))
+                    t += L_eff
+                else:
+                    t += 1
+            else:
+                t += 1
+
+    return m, events
+
+
+
+
+# How this matches Detrimental.pdf:
+
+# R matrix analogue: p_event plays the role of the marginal start probability; in the paper, each group’s start probability comes from R.
+# T matrix analogue: the geometric continuation (gamma) is the streak temporal profile — same as Tkj being 1 for j in [t1,t2]
+# Logical OR step: We prevent overwriting existing errors by skipping occupied (q,t) cells — effectively an OR of new events with the existing mask.
+
+# Group correlation: All qubits in group share the same Pauli for the entire streak → multi-qubit, multi-round correlation.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # Each qubit in each round should experience at most one error event. 
 # The error types are exclusive: if a location is designated to have a Y error, then only a Y error is injected there (not an X and Y together, for example). 
 
-def mask_generator(qubits:int, rounds:int, datas: List,  spatial_one_round: bool =False, temporal_one_qubit: bool=False, spatio_temporal:bool=False, multi_qubit_temporal: bool=False):
-    M=mask_init(qubits=qubits, rounds=rounds)
-    clusters=List[Tuple[int, np.ndarray]] = []
+def mask_generator(qubits:int, rounds:int, qubits_ind: List,  spatial_one_round: bool =False, temporal_one_qubit: bool=False, spatio_temporal:bool=False, multi_qubit_temporal: bool=False):
+    m=mask_init(qubits=qubits, rounds=rounds)
+    clusters= []
     if spatial_one_round:
-        m,clusters=spatial_clusters(m=M, qus=qubits, rounds=rounds, qubit_nums=datas, probab=0.2, wrap=False, rad=2, pr_to_neigh=0.4)
-        print('/n')
+        m,clusters=spatial_clusters(m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind, probab=0.2, wrap=False, rad=2, pr_to_neigh=0.4)
+        print('\n')
         for event in clusters:
             print(f'Event---Cluster: {event}')   #mask, (round, (qubits affected))
 
     if temporal_one_qubit:
-        m, streaks=temporal_streaks_single_qubit(m=M, qus=qubits, rounds=rounds)    #mask, ((qubit, round, streak length, pauli code))
+        m, streaks=temporal_streaks_single_qubit(m=m, qus=qubits, rounds=rounds)    #mask, ((qubit, round, streak length, pauli code))
         print('\n')
         for streak in streaks:
             print(f'Event---Streak: {streak}')
     if spatio_temporal:
         if spatial_clusters:
 
-            m=extend_clusters(m=M, rounds=rounds, qus=qubits, clusters=clusters)
+            extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters)
+        else:
+            m,clusters=spatial_clusters(m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind, probab=0.2, wrap=False, rad=2, pr_to_neigh=0.4)
+            print('\n')
+            for event in clusters:
+                print(f'Event---Cluster: {event}')   #mask, (round, (qubits affected))
+            extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters)
+    if multi_qubit_temporal:
+        multi_qubit_multi_round(m=m, qus=qubits, rounds=rounds)
     print(f'\nMask:\n {m}')
-    return M
+    return m
 

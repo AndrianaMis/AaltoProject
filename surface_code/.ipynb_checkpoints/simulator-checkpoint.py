@@ -173,8 +173,10 @@ all_qubits=d+a
 
 
 ## I am thinking of generating M_data and M_anchilla and M_CNOT. this way, we will have them ckeared out, so somehow we can combine them at the end 
-M_data=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, spatial_one_round=False, temporal_one_qubit=False, spatio_temporal=False, multi_qubit_temporal=True)
+M_data=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, spatial_one_round=True, temporal_one_qubit=False, spatio_temporal=True)
+from IPython.display import SVG, display
 
+display(SVG(circuit.diagram("detslice-svg")))
 
 
 

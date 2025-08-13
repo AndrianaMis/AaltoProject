@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="460" height="460" viewBox="0 0 460 460" font-family="Inter, Arial, sans-serif">
+<rect width="100%" height="100%" fill="white"/>
+<g transform="translate(0,40)">
+<line x1="80" y1="80" x2="280" y2="80" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="80" y1="180" x2="280" y2="180" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="80" y1="280" x2="280" y2="280" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="80" y1="80" x2="80" y2="280" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="180" y1="80" x2="180" y2="280" stroke="#e0e0e0" stroke-width="1"/>
+<line x1="280" y1="80" x2="280" y2="280" stroke="#e0e0e0" stroke-width="1"/>
+<text x="230.0" y="30" font-size="18" text-anchor="middle" fill="#222"></text>
+<line x1="130.0" y1="130.0" x2="80" y2="80" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="130.0" y1="130.0" x2="180" y2="80" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="130.0" y1="130.0" x2="80" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="130.0" y1="130.0" x2="180" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<polygon points="130.0,116.0 144.0,130.0 130.0,144.0 116.0,130.0" fill="#ffdddd" stroke="#cc3333" stroke-width="2"/>
+<text x="130.0" y="135.0" font-size="14" text-anchor="middle" fill="#991111">Z</text>
+<line x1="230.0" y1="130.0" x2="180" y2="80" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="230.0" y1="130.0" x2="280" y2="80" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="230.0" y1="130.0" x2="180" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="230.0" y1="130.0" x2="280" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<rect x="216.0" y="116.0" width="28" height="28" fill="#dde9ff" stroke="#3366cc" stroke-width="2"/>
+<text x="230.0" y="135.0" font-size="14" text-anchor="middle" fill="#113399">X</text>
+<line x1="130.0" y1="230.0" x2="80" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="130.0" y1="230.0" x2="180" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="130.0" y1="230.0" x2="80" y2="280" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="130.0" y1="230.0" x2="180" y2="280" stroke="#666" stroke-width="2" opacity="0.6"/>
+<rect x="116.0" y="216.0" width="28" height="28" fill="#dde9ff" stroke="#3366cc" stroke-width="2"/>
+<text x="130.0" y="235.0" font-size="14" text-anchor="middle" fill="#113399">X</text>
+<line x1="230.0" y1="230.0" x2="180" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="230.0" y1="230.0" x2="280" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="230.0" y1="230.0" x2="180" y2="280" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="230.0" y1="230.0" x2="280" y2="280" stroke="#666" stroke-width="2" opacity="0.6"/>
+<polygon points="230.0,216.0 244.0,230.0 230.0,244.0 216.0,230.0" fill="#ffdddd" stroke="#cc3333" stroke-width="2"/>
+<text x="230.0" y="235.0" font-size="14" text-anchor="middle" fill="#991111">Z</text>
+<line x1="130.0" y1="30.0" x2="80" y2="80" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="130.0" y1="30.0" x2="180" y2="80" stroke="#666" stroke-width="2" opacity="0.6"/>
+<rect x="116.0" y="16.0" width="28" height="28" fill="#dde9ff" stroke="#3366cc" stroke-width="2"/>
+<text x="130.0" y="35.0" font-size="14" text-anchor="middle" fill="#113399">X</text>
+<line x1="230.0" y1="330.0" x2="180" y2="280" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="230.0" y1="330.0" x2="280" y2="280" stroke="#666" stroke-width="2" opacity="0.6"/>
+<rect x="216.0" y="316.0" width="28" height="28" fill="#dde9ff" stroke="#3366cc" stroke-width="2"/>
+<text x="230.0" y="335.0" font-size="14" text-anchor="middle" fill="#113399">X</text>
+<line x1="30.0" y1="230.0" x2="80" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="30.0" y1="230.0" x2="80" y2="280" stroke="#666" stroke-width="2" opacity="0.6"/>
+<polygon points="30.0,216.0 44.0,230.0 30.0,244.0 16.0,230.0" fill="#ffdddd" stroke="#cc3333" stroke-width="2"/>
+<text x="30.0" y="235.0" font-size="14" text-anchor="middle" fill="#991111">Z</text>
+<line x1="330.0" y1="130.0" x2="280" y2="80" stroke="#666" stroke-width="2" opacity="0.6"/>
+<line x1="330.0" y1="130.0" x2="280" y2="180" stroke="#666" stroke-width="2" opacity="0.6"/>
+<polygon points="330.0,116.0 344.0,130.0 330.0,144.0 316.0,130.0" fill="#ffdddd" stroke="#cc3333" stroke-width="2"/>
+<text x="330.0" y="135.0" font-size="14" text-anchor="middle" fill="#991111">Z</text>
+<circle cx="80" cy="80" r="8" fill="black"/>
+<circle cx="180" cy="80" r="8" fill="black"/>
+<circle cx="280" cy="80" r="8" fill="black"/>
+<circle cx="80" cy="180" r="8" fill="black"/>
+<circle cx="180" cy="180" r="8" fill="black"/>
+<circle cx="280" cy="180" r="8" fill="black"/>
+<circle cx="80" cy="280" r="8" fill="black"/>
+<circle cx="180" cy="280" r="8" fill="black"/>
+<circle cx="280" cy="280" r="8" fill="black"/>
+<circle cx="80" cy="80" r="8" fill="black"/>
+<circle cx="180" cy="80" r="8" fill="black"/>
+<circle cx="280" cy="80" r="8" fill="black"/>
+<circle cx="80" cy="180" r="8" fill="black"/>
+<circle cx="180" cy="180" r="8" fill="black"/>
+<circle cx="280" cy="180" r="8" fill="black"/>
+<circle cx="80" cy="280" r="8" fill="black"/>
+<circle cx="180" cy="280" r="8" fill="black"/>
+<circle cx="280" cy="280" r="8" fill="black"/>
+</g>
+</svg>
