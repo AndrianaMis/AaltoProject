@@ -2,7 +2,7 @@
 from typing import List, Tuple, Dict, Optional
 
 import numpy as np
-import random as rand
+import random
 I, X, Z, Y = 0, 1, 2, 3
 #First of all, intialize the mask
 def mask_init(qubits: int, rounds:int):
@@ -37,7 +37,7 @@ def spatial_clusters(
     pX=0.5,
     pZ=0.4,
     rng: np.random.Generator | None = None,
-) -> tuple[np.ndarray, List[Tuple[int, np.ndarray]]]:
+) -> tuple[np.ndarray, List[Tuple[int, np.ndarray, int]]]:
     """
     Insert *one-round* spatial cluster events (Markovian) into m without overwriting
     existing entries. Returns (updated_mask, events), where events is a list of
@@ -53,8 +53,8 @@ def spatial_clusters(
         rng = np.random.default_rng()
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
 
-    events: List[Tuple[int, np.ndarray]] = []
-    print('------------------ Injecting spatial cluster correlations -------------------------------\n\n')
+    events: List[Tuple[int, np.ndarray, int]] = []
+    print('------------------ #1 Injecting spatial cluster correlations -------------------------------\n\n')
 
     for t in range(rounds):
         ran=rng.random()
@@ -94,10 +94,10 @@ def spatial_clusters(
                     if rng.random()< pr_to_neigh:
                         chosen.append(n)
                         print(f'Adding noise to neighbor: {n}')
-                        m[n, t] = pauli_code  # mark occupancy (assign Pauli later)
+                        m[n, t] = pauli_code  
 
                 #the cluster
-                events.append((t, np.array(chosen.copy())))
+                events.append((t, np.array(chosen.copy()), int(pauli_code)))
                 print(qubit_nums)
 
 
@@ -184,7 +184,7 @@ def temporal_streaks_single_qubit(
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
 
     streaks: List[Tuple[int, int, int, int]] = []
-    print('------------------ Injecting Temporal one-qubit correlations -------------------------------\n\n')
+    print('------------------ #2 Injecting Temporal one-qubit correlations -------------------------------\n\n')
     for qi in range(qus):
         t = 0
 
@@ -221,7 +221,7 @@ def temporal_streaks_single_qubit(
                     L_eff += 1
 
                 if L_eff > 0:
-                    streaks.append((t, qi, L_eff, pauli_code))
+                    streaks.append((t, qi, L_eff, int(pauli_code)))
                     t += L_eff
                 else:
                     # couldn't place (occupied immediately); move on
@@ -264,11 +264,11 @@ def extend_clusters(
         rng = np.random.default_rng()
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
     streaks: List[Tuple[List[Tuple[int, np.ndarray]], int, int]] = []    #[(cluster), length, -2]
-    print('------------------ Extending Clusters correlations -------------------------------\n\n')
+    print('------------------  #3 Extending Clusters correlations -------------------------------\n\n')
 
     for cluster in clusters:
         print(f'\nChecking cluster: {cluster}')
-        r, cl_qus=cluster
+        r, cl_qus, code=cluster
 
         if rng.random() < p_start:  
                 print(f'We are gonna extend cluster {cluster}')
@@ -320,11 +320,11 @@ def multi_qubit_multi_round(
     qus: int,
     rounds: int,
     *,
-    group_size: int = 3,       # how many qubits in each correlated group
-    p_event: float = 0.2,     # probability of starting an event for a given group
+    group_size: int = random.randint(1,5),       # how many qubits in each correlated group
+    p_event: float = 0.05,     # probability of starting an event for a given group
     gamma: float = 0.5,        # continuation probability for the streak length
     max_len: Optional[int] = None,
-    pX: float = 0.33, pZ: float = 0.33, pY: float = 0.34,
+    pX: float = 0.5, pZ: float = 0.5, 
     rng: np.random.Generator | None = None
 ) -> tuple[np.ndarray, list]:
     """
@@ -346,14 +346,16 @@ def multi_qubit_multi_round(
     assert m.shape == (qus, rounds)
 
     events = []
+    print('\n-------------------------- #4 Injecting random multi-qubit multi-round correlations ------------------')
 
     # Step 1: create groups
     groups = []
+
     for start in range(0, qus, group_size):
         group = list(range(start, min(start + group_size, qus)))
         if len(group) > 1:
             groups.append(group)
-    print(f'We have made {len(groups)} groups')
+    print(f'We have made {len(groups)} groups:\n{ groups}')
     # Step 2: iterate over groups and possible start times
     for g in groups:
         t = 0
@@ -363,7 +365,7 @@ def multi_qubit_multi_round(
                 L = sample_geometric_len(rng, gamma, max_len)
 
                 # Step 4: choose Pauli for the whole streak
-                pauli_code = sample_pauli_code(rng, pX, pZ, pY)
+                pauli_code = sample_pauli_code(rng, pX, pZ)
 
                 # Step 5: inject if free
                 L_eff = 0
@@ -371,16 +373,19 @@ def multi_qubit_multi_round(
                     tt = t + dt
                     if tt >= rounds:
                         break
-                    # check if all positions in group at this round are free
-                    free_qubits = [q for q in g if m[q, tt] == 0]
-                    if not free_qubits:
-                        break
-                    for q in free_qubits:
-                        m[q, tt] = pauli_code
+                   
+                    for qi in g:
+                        current = m[qi, tt]
+                        if current == 0:       
+                            m[qi, tt] = pauli_code
+                        elif (current, pauli_code) in [(1, 2), (2, 1)]:  # X then Z or Z then X                  
+                            m[qi, tt] = 3
+                            
+                    print(f'Injecting error in round {tt} ')
                     L_eff += 1
 
                 if L_eff > 0:
-                    events.append((g, t, L_eff, pauli_code))
+                    events.append((g, t, L_eff, int(pauli_code)))
                     t += L_eff
                 else:
                     t += 1
@@ -459,6 +464,9 @@ def mask_generator(qubits:int, rounds:int, qubits_ind: List,  spatial_one_round:
 
     if multi_qubit_temporal:
         multi_qubit_multi_round(m=m, qus=qubits, rounds=rounds)
+        print('\n--------------------------Finished injecting random multi-qubit multi-round correlations ------------------')
+        print(f'\nMask M0 after multi qubit , multi-round:\n{m}\n\n')
+
     print(f'\nFinal Mask M0:\n{m}')
     return m
 

@@ -173,7 +173,7 @@ all_qubits=d+a
 
 
 ## I am thinking of generating M_data and M_anchilla and M_CNOT. this way, we will have them ckeared out, so somehow we can combine them at the end 
-M_data=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, spatial_one_round=True, temporal_one_qubit=False, spatio_temporal=True, multi_qubit_temporal=False)
+M_data=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, spatial_one_round=False, temporal_one_qubit=False, spatio_temporal=False, multi_qubit_temporal=True)
 
 
 

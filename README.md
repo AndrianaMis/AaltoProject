@@ -17,3 +17,7 @@ Mask Generation: spatial-clusters ----> Done!   ,   temporal-one_qubit ----> Don
 ## 13/08/25:
 
 Mask generation: CHose physical nosie channel, got rid of depolarizing-like features (iinjecting Y errors). Now, X+Z=Y
+
+## 15/08/25:
+
+Work on last function for M0. 
