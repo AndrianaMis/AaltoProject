@@ -21,3 +21,8 @@ Mask generation: CHose physical nosie channel, got rid of depolarizing-like feat
 ## 15/08/25:
 
 Work on last function for M0. 
+
+## 19/08/25:
+
+Marginalized probabilities for each category based on a non-hardware-aware idle probab (empirical average per-idle-qubit error probability per round). 
+Also made a functin for stats.py. Find out whether cat4 function moves the groups to contigeous rounds or not. (shouldnt). 

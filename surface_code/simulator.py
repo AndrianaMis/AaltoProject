@@ -4,6 +4,9 @@ import stim
 import stim
 import numpy as np
 from noise_injection import mask_generator
+from marginalize import calibrate_start_rates, build_mask_once, cfg
+from stats import measure_mask_stats
+
 
 # # Build your circuit
 # d = 5
@@ -170,12 +173,47 @@ all_qubits=d+a
 ###!!!!!!!!!!!!!!!!!!Dont forget to map data qubits to 0-d²-1 !!!!!!!!! 
 
 
+batch_marg=256
+iters_marg=6
+
+# cfg_ = calibrate_start_rates(
+#     build_mask_once=build_mask_once,
+#     qubits=len(d), 
+#     rounds=rounds, 
+#     qubits_ind=d,
+#     cfg=cfg,
+#     p_idle_target=cfg["p_idle"],
+#     batch=batch_marg,
+#     iters=iters_marg,
+#     tol=0.05,   # ±15% is plenty for training
+#     verbose=True
+# )
+# print(f"\n\n\nCalibrated start_probs (batch: {batch_marg}, iters: {iters_marg}):")
+# for key in ("t1", "t2", "t3", "t4"):
+#     if key in cfg_ and cfg_[key].get("enabled", False) and "p_start" in cfg_[key]:
+#         print(cfg_[key]["p_start"])
+
+cfgg={'p_idle': 0.005, 
+      't1': {'enabled': True, 'p_start': 0.001966650917194283, 'rad': 2, 'clusters': 1, 'wrap': False, 'pr_to_neigh': 0.3, 'pX': 0.5, 'pZ': 0.5}, 
+      't2': {'enabled': True, 'p_start': 0.0009833254585971416, 'gamma': 0.6, 'pX': 0.5, 'pZ': 0.5}, 
+      't3': {'enabled': True, 'p_start': 0.003933301834388566, 'gamma': 0.6, 'pX': 0.5, 'pZ': 0.5}, 
+      't4': {'enabled': True, 'p_start': 0.00019666509171942833, 'gamma': 0.6, 'qset_min': 2, 'qset_max': 5, 'pX': 0.5, 'pZ': 0.5, 'disjoint_qubit_groups': True}
+      }
+print(f'CFG: \n{cfg}')
+# print(f"\n\n\nCalibrated start_probs (batch: {256}, iters: {6}):")
+# for key in ("t1", "t2", "t3", "t4"):
+#     if key in cfg and cfg[key].get("enabled", False) and "p_start" in cfg[key]:
+#         print(cfg[key]["p_start"])
 
 
 ## I am thinking of generating M_data and M_anchilla and M_CNOT. this way, we will have them ckeared out, so somehow we can combine them at the end 
-M_data=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, spatial_one_round=False, temporal_one_qubit=False, spatio_temporal=False, multi_qubit_temporal=True)
 
 
+for _ in range(100):
+
+    M_data, actives=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, cfg=cfg, actives_list=True)
+    measure_mask_stats(m=M_data, actives=actives)
+#print(f'\nFinal Mask M0:\n{M_data}')
 
 
 # !!!!!!!  This is how we will be able to combine the encoding circuits, once provided, that initalize a logical state, with the already existing circuits of STIM
