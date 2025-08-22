@@ -57,6 +57,6 @@ def measure_mask_stats(m: np.ndarray, actives, label: str = "M0") -> dict:
         print(f"  top rounds by occupancy: {[(int(t), float(per_round[t])) for t in top_t]}")
         print(f'  Cat1: {actives[0] }   Cat2: {actives[1]}   Cat3: {actives[2]}     Cat4: {actives[3]}')
 
-        print(f'Mask: \n{m}')
+       # print(f'Mask: \n{m}')
 
     return report

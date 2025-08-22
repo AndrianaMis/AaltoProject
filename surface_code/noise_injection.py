@@ -37,7 +37,7 @@ def spatial_clusters(
     rounds: int,
     qubit_nums: List,
     p_start: float = 0.002,     # per-round chance to activate spatial bursts
-    clusters: int = 1,        # how many clusters when a burst happens
+    clusters_per_burst: int = 1,        # how many clusters when a burst happens
     rad: int = 1,             # 1D neighborhood radius around a seed
     wrap: bool = False,       # treat qubits as a ring if True; else clamp at edges
     pr_to_neigh=0.3,
@@ -67,7 +67,7 @@ def spatial_clusters(
         ran=rng.random()
         if ran < p_start:
 #            print(f'Start injecting spatial noise in round {t}')
-            for _ in range(clusters):
+            for _ in range(clusters_per_burst):
                 # pick a seed where the round is still empty
                 empty_sites = np.flatnonzero(m[:, t] == 0)
                 if empty_sites.size == 0:
@@ -257,7 +257,7 @@ def extend_clusters(
     p_start: float = 0.004,         # chance to *start* a streak when free
     gamma: float = 0.6  ,
     pX=0.5,
-    pZ=0.4,
+    pZ=0.5,
     rng: np.random.Generator | None = None,
     max_len: Optional[int] = None
 
@@ -267,18 +267,21 @@ def extend_clusters(
         rng = np.random.default_rng()
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
     streaks: List[Tuple[List[Tuple[int, np.ndarray]], int, int]] = []    #[(cluster), length, -2]
-   # print(f'------------------  #3 Extending Clusters correlations with p_start: {p_start} -------------------------------\n\n')
- 
+    #print(f'------------------  #3 Extending Clusters correlations with p_start: {p_start} -------------------------------\n\n')
+    cand = 0; trig = 0
     for cluster in clusters:
-#        print(f'\nChecking cluster: {cluster}')
+        #print(f'\nChecking cluster: {cluster}')
         r, cl_qus, code=cluster
-
+        if r >= rounds-1:
+            continue
+        cand += 1
         if rng.random() < p_start:  
- #               print(f'We are gonna extend cluster {cluster}')
+                trig += 1
+  #              print(f'We are gonna extend cluster {cluster}')
                 L = sample_geometric_len(rng, gamma, max_len) 
-#                print(f'Sampled streak length l: {L}')
+   #             print(f'Sampled streak length l: {L}')
                 L+=1
-                pauli_code = sample_pauli_code(rng, pX, pZ)
+                pauli_code = code
 
                 L_eff = 0
                 # fill until we hit an occupied cell or run out of rounds
@@ -293,7 +296,7 @@ def extend_clusters(
                         elif (current, pauli_code) in [(1, 2), (2, 1)]:  # X then Z or Z then X                  
                             m[q, tt] = 3
                             
-#                    print(f'Injecting error in round {tt} ')
+ #                   print(f'Injecting error in round {tt} ')
                     L_eff += 1
 
                 if L_eff > 0:
@@ -349,6 +352,11 @@ def multi_qubit_multi_round2(
     pZ: float = 0.5,
     disjoint_qubit_groups: bool = False, # if True, a qubit is used by at most one event
     rng: Optional[np.random.Generator] = None,
+    decay_model: str = "power",       # for scattered: "uniform" | "power" 
+    decay_n: float = 2.0,             # n in 1/Δt^n or e^{-nΔt}
+    decay_A: float = 1.0,             # global weight scale (usually fine at 1.0)
+    k_min: int = 2,                   # min number of hits (times) per scattered event (≥2 recommended)
+    k_max: int = 5,                   # max number of hits (times) per scattered event
 ) -> Tuple[np.ndarray, List[Tuple[List[int], int, int, int]]]:
     """
     Multi-qubit, multi-round *streaky* events (Detrimental Sec. III-B):
@@ -358,6 +366,9 @@ def multi_qubit_multi_round2(
       - Apply P to all q∈Q at t0, then extend to t0+1, t0+2,... while a Bernoulli(γ) continues.
       - Stop at first occupied conflict (cell already non-I) or at L_max/time horizon.
       - Overlap rule at a cell: X+Z -> Y; keep existing otherwise.
+          Decay models for scattered:
+      - "uniform":   all other rounds equally likely.
+      - "power":     w(Δt) ∝ A / max(Δt,1)^n      (Detrimental pairwise flavor).
     Returns:
       (updated_mask, events) where each event is (Q, t0, L_eff, P).
     """
@@ -369,13 +380,44 @@ def multi_qubit_multi_round2(
         qset_max = min(8, qus)
     qset_min = max(1, min(qset_min, qset_max))
 
+#        print(f'Mask after [{q0,t0}] center injection: \n{m}\n')
+    def draw_scattered_times(t0: int, k: int) -> np.ndarray:
+        """Pick k distinct times (including t0) with decay-vs-gap weights."""
+        if k <= 0:
+            return np.array([t0], dtype=int)
+
+        times = np.arange(rounds)
+        mask = times != t0
+        pool = times[mask]
+     
+        dt = np.abs(pool - t0).astype(float)
+        dt[dt < 1.0] = 1.0  # guard Δt=0 (already excluded)
+        if decay_model == "power":
+            w = decay_A / (dt ** decay_n)
+    
+        else:
+            # fallback to uniform if unknown
+            w = np.ones_like(pool, dtype=float)
+
+        w_sum = w.sum()
+        if w_sum <= 0:
+            w = np.ones_like(pool, dtype=float)
+            w_sum = w.sum()
+        w = w / w_sum
+
+        pick = min(max(0, k - 1), pool.size)  # we already include t0 below
+        extra = rng.choice(pool, size=pick, replace=False, p=w)
+        Tset = np.unique(np.concatenate([[t0], extra])).astype(int)
+
+        return Tset
+
     # Build start field and sample starts
     starts = rng.random((qus, rounds)) < p_start
-#    print(f'---------------------------- #4 Multi-qubit Multi-round random correlations with p_start: {p_start} ----------------------------------\n\n')
+ #   print(f'---------------------------- #4 Multi-qubit Multi-round random correlations with p_start: {p_start} ----------------------------------\n\n')
 
     centers = np.argwhere(starts)
     rng.shuffle(centers)
-#    print(f'Centers: {centers}')
+  #  print(f'Centers: {centers}')
     # Pauli draw (X/Z only)
     probs = np.array([pX, pZ], dtype=float)
     if probs.sum() <= 0:
@@ -408,47 +450,60 @@ def multi_qubit_multi_round2(
         Q = [q0]
         if q_size > 1:
             Q.extend(rng.choice(candidates, size=q_size - 1, replace=False).astype(int).tolist())
- #       print(f'Q: {Q} and ')
-  #      print(f'How many correlated qubits: {q_size}:\n{Q}')
+
+#        print(f'How many correlated qubits: {q_size}:\n{Q}')
 
         # Draw the event Pauli P (X or Z)
         P = int([X, Z][rng.choice([0, 1], p=probs)])
 
-        # Streaky extension: contiguous rounds starting at t0
-        t = t0
-        L_eff = 0
-        while t < rounds and (L_max is None or L_eff < L_max):
-            # Try to write P on all q∈Q at this t; if any conflict is hard (no composition change), we still proceed
-            wrote_any = False
+   
+        k = int(rng.integers(max(1, k_min), max(k_min, k_max) + 1))
+        Tset = draw_scattered_times(t0, k)
+ #       print(f'Tset, the rounds we will inejct: {Tset}')
+        for t in Tset:
             for q in Q:
-                new_val = _compose_xz_to_y(m[q, t], P)
-                if new_val != m[q, t]:
-                    m[q, t] = new_val
-                    wrote_any = True
-            if wrote_any:
-                L_eff += 1
-                t += 1
-                # Continue with probability gamma
-                if rng.random() >= gamma:
-                    break
-            else:
-                # nothing changed this round (all cells already had same/equivalent), still advance but may stop early
-                t += 1
-                L_eff += 1
-                if rng.random() >= gamma:
-                    break
-    
-
+                m[q, t] = _compose_xz_to_y(m[q, t], P)
+   #             if m[q,t]==3:
+  #                  print('\n\n\nGOT Y\n')
+        L_eff = len(Tset)
         if L_eff > 0:
             events.append((Q, t0, L_eff, P))
             if disjoint_qubit_groups:
                 used_qubits.update(Q)
 
-#        print(f'Mask after [{q0,t0}] center injection: \n{m}\n')
-
     return m, events
 
 
+
+     # # Streaky extension: contiguous rounds starting at t0
+        # t = t0
+        # L_eff = 0
+        # while t < rounds and (L_max is None or L_eff < L_max):
+        #     # Try to write P on all q∈Q at this t; if any conflict is hard (no composition change), we still proceed
+        #     wrote_any = False
+        #     for q in Q:
+        #         new_val = _compose_xz_to_y(m[q, t], P)
+        #         if new_val != m[q, t]:
+        #             m[q, t] = new_val
+        #             wrote_any = True
+        #     if wrote_any:
+        #         L_eff += 1
+        #         t += 1
+        #         # Continue with probability gamma
+        #         if rng.random() >= gamma:
+        #             break
+        #     else:
+        #         # nothing changed this round (all cells already had same/equivalent), still advance but may stop early
+        #         t += 1
+        #         L_eff += 1
+        #         if rng.random() >= gamma:
+        #             break
+    
+
+        # if L_eff > 0:
+        #     events.append((Q, t0, L_eff, P))
+        #     if disjoint_qubit_groups:
+        #         used_qubits.update(Q)
 
 
 
@@ -491,6 +546,7 @@ def mask_generator(qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:b
     c4=False
 
     if spatial_one_round:
+        
         m,clusters=spatial_clusters(m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind, p_start=cfg["t1"]["p_start"], wrap=cfg["t1"]["wrap"], rad=cfg["t1"]["rad"], 
                                     pr_to_neigh=cfg["t1"]["pr_to_neigh"], pX=cfg["t1"]["pX"], pZ=cfg["t1"]["pZ"])
         # print('\n')
@@ -516,11 +572,8 @@ def mask_generator(qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:b
             c2=True
 
     if spatio_temporal:
-        if spatial_clusters:
-
-            m, streaks3=extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters, p_start=cfg["t3"]["p_start"], gamma=cfg["t3"]["gamma"], pX=cfg["t3"]["pX"], pZ=cfg["t3"]["pZ"])
-
-        else:
+        streaks3=[]
+        if not clusters:
             m,clusters=spatial_clusters(m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind, p_start=cfg["t1"]["p_start"], wrap=cfg["t1"]["wrap"], rad=cfg["t1"]["rad"], 
                                     pr_to_neigh=cfg["t1"]["pr_to_neigh"], pX=cfg["t1"]["pX"], pZ=cfg["t1"]["pZ"])
             # print('\n')
@@ -529,9 +582,15 @@ def mask_generator(qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:b
             
             # print('\n--------------------------Finished injecting spatial cluster correlations ------------------')
 
+            if len(clusters)>0:
+            #     print(f"\n\n[cat#1] clusters={len(clusters)} "
+            #     f"eligible={sum(1 for (r,_,_) in clusters if r < rounds-1)} "
+            #     f"p_ext={cfg['t3']['p_start']}")
 
-            m , streaks3=extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters, p_start=cfg["t3"]["p_start"], gamma=cfg["t3"]["gamma"], pX=cfg["t3"]["pX"], pZ=cfg["t3"]["pZ"])
-        
+            #    print(f'{len(clusters)} extension\n')
+                m , streaks3=extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters, p_start=cfg["t3"]["p_start"], gamma=cfg["t3"]["gamma"], pX=cfg["t3"]["pX"], pZ=cfg["t3"]["pZ"])
+                c1=True
+
 
         if len(streaks3)>0:
             c3=True
@@ -551,8 +610,12 @@ def mask_generator(qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:b
 
         if len(events4)>0:
             c4=True
+        
+
+
     if actives_list:
         return m , [c1,c2,c3,c4]
+    
     return m
 
 

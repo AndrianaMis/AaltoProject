@@ -3,7 +3,7 @@ from visualize import plot_surface_code_lattice
 import stim
 import stim
 import numpy as np
-from noise_injection import mask_generator
+from noise_injection import mask_generator, spatial_clusters, extend_clusters
 from marginalize import calibrate_start_rates, build_mask_once, cfg
 from stats import measure_mask_stats
 
@@ -104,23 +104,6 @@ print(mr_indices)
 # print(circuit)
 
 
-sim = stim.FlipSimulator(
-    batch_size=rounds,
- 
-    disable_stabilizer_randomization=True,  # Usually desirable for deterministic injection
-)
-
-
-# for t in range(rounds):
-#     for q in range(qubits):
-#         pauli = mask[q, t]
-#         if pauli:
-#             sim.set_pauli_flip(pauli, qubit_index=q, instance_index=t)
-# for t in range(rounds):
-#     print(f"Round {t}: {sim.peek_pauli_flips(instance_index=t)}")
-
-
-
 
 # print(circuit.num_qubits)
 # coords = list(circuit.get_final_qubit_coordinates().items())
@@ -174,32 +157,32 @@ all_qubits=d+a
 
 
 batch_marg=256
-iters_marg=6
+iters_marg=10
 
-# cfg_ = calibrate_start_rates(
-#     build_mask_once=build_mask_once,
-#     qubits=len(d), 
-#     rounds=rounds, 
-#     qubits_ind=d,
-#     cfg=cfg,
-#     p_idle_target=cfg["p_idle"],
-#     batch=batch_marg,
-#     iters=iters_marg,
-#     tol=0.05,   # ±15% is plenty for training
-#     verbose=True
-# )
-# print(f"\n\n\nCalibrated start_probs (batch: {batch_marg}, iters: {iters_marg}):")
-# for key in ("t1", "t2", "t3", "t4"):
-#     if key in cfg_ and cfg_[key].get("enabled", False) and "p_start" in cfg_[key]:
-#         print(cfg_[key]["p_start"])
+cfg_ = calibrate_start_rates(
+    build_mask_once=build_mask_once,
+    qubits=len(d), 
+    rounds=rounds, 
+    qubits_ind=d,
+    cfg=cfg,
+    p_idle_target=cfg["p_idle"],
+    batch=batch_marg,
+    iters=iters_marg,
+    tol=0.05,   # ±15% is plenty for training
+    verbose=True
+)
+print(f"\n\nCalibrated start_probs (batch: {batch_marg}, iters: {iters_marg}):")
+for key in ("t1", "t2", "t3", "t4"):
+    if key in cfg_ and cfg_[key].get("enabled", False) and "p_start" in cfg_[key]:
+        print(cfg_[key]["p_start"])
 
-cfgg={'p_idle': 0.005, 
-      't1': {'enabled': True, 'p_start': 0.001966650917194283, 'rad': 2, 'clusters': 1, 'wrap': False, 'pr_to_neigh': 0.3, 'pX': 0.5, 'pZ': 0.5}, 
-      't2': {'enabled': True, 'p_start': 0.0009833254585971416, 'gamma': 0.6, 'pX': 0.5, 'pZ': 0.5}, 
-      't3': {'enabled': True, 'p_start': 0.003933301834388566, 'gamma': 0.6, 'pX': 0.5, 'pZ': 0.5}, 
-      't4': {'enabled': True, 'p_start': 0.00019666509171942833, 'gamma': 0.6, 'qset_min': 2, 'qset_max': 5, 'pX': 0.5, 'pZ': 0.5, 'disjoint_qubit_groups': True}
-      }
-print(f'CFG: \n{cfg}')
+# cfgg={'p_idle': 0.005, 
+#       't1': {'enabled': True, 'p_start': 0.001966650917194283, 'rad': 2, 'clusters': 1, 'wrap': False, 'pr_to_neigh': 0.3, 'pX': 0.5, 'pZ': 0.5}, 
+#       't2': {'enabled': True, 'p_start': 0.0009833254585971416, 'gamma': 0.6, 'pX': 0.5, 'pZ': 0.5}, 
+#       't3': {'enabled': True, 'p_start': 0.003933301834388566, 'gamma': 0.6, 'pX': 0.5, 'pZ': 0.5}, 
+#       't4': {'enabled': True, 'p_start': 0.00019666509171942833, 'gamma': 0.6, 'qset_min': 2, 'qset_max': 5, 'pX': 0.5, 'pZ': 0.5, 'disjoint_qubit_groups': True}
+#       }
+# print(f'CFG: \n{cfg}')
 # print(f"\n\n\nCalibrated start_probs (batch: {256}, iters: {6}):")
 # for key in ("t1", "t2", "t3", "t4"):
 #     if key in cfg and cfg[key].get("enabled", False) and "p_start" in cfg[key]:
@@ -207,14 +190,119 @@ print(f'CFG: \n{cfg}')
 
 
 ## I am thinking of generating M_data and M_anchilla and M_CNOT. this way, we will have them ckeared out, so somehow we can combine them at the end 
+cat_counts=[0, 0, 0, 0]
 
+for _ in range(1000):
 
-for _ in range(100):
-
-    M_data, actives=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, cfg=cfg, actives_list=True)
+    M_data, actives=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, cfg=cfg_, actives_list=True)
     measure_mask_stats(m=M_data, actives=actives)
+    cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
 #print(f'\nFinal Mask M0:\n{M_data}')
+print(f'Each category coutns: {cat_counts}')
 
+
+M_data=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, cfg=cfg_, actives_list=False)
+print(f'\nFinal Mask M0:\n{M_data}')
+
+
+#---------------------------------  FlipSIm-------------------------------------------------
+
+sim = stim.FlipSimulator(
+    batch_size=rounds,
+ 
+    disable_stabilizer_randomization=True,  # Usually desirable for deterministic injection
+)
+
+
+import numpy as np, stim
+
+def inject_with_flip_sim(circ_by_round, data_ids, anc_ids, M_data, M_anc):
+    num_qubits  = max(max(data_ids, default=-1), max(anc_ids, default=-1)) + 1
+    sim = stim.FlipSimulator(batch_size=1, num_qubits=num_qubits,
+                             disable_stabilizer_randomization=True)
+
+    for r, parts in enumerate(circ_by_round):
+        # parts = (prefix_until_data_injection, between_data_and_ancilla, measure_block)
+        pre, between, meas_block = parts
+
+        sim.do(pre)
+
+        # --- inject DATA errors for round r ---
+        xmask = np.zeros((num_qubits, 1), np.bool_)
+        ymask = np.zeros((num_qubits, 1), np.bool_)
+        zmask = np.zeros((num_qubits, 1), np.bool_)
+        xmask[data_ids, 0] = (M_data[data_ids, r] == 1)
+        ymask[data_ids, 0] = (M_data[data_ids, r] == 3)
+        zmask[data_ids, 0] = (M_data[data_ids, r] == 2)
+        if xmask.any(): sim.broadcast_pauli_errors('X', xmask)
+        if ymask.any(): sim.broadcast_pauli_errors('Y', ymask)
+        if zmask.any(): sim.broadcast_pauli_errors('Z', zmask)
+
+        sim.do(between)
+
+        # --- inject ANCILLA errors just before measurement ---
+        xmask[:] = False; ymask[:] = False; zmask[:] = False
+        xmask[anc_ids, 0] = (M_anc[anc_ids, r] == 1)
+        ymask[anc_ids, 0] = (M_anc[anc_ids, r] == 3)
+        zmask[anc_ids, 0] = (M_anc[anc_ids, r] == 2)
+        if xmask.any(): sim.broadcast_pauli_errors('X', xmask)
+        if ymask.any(): sim.broadcast_pauli_errors('Y', ymask)
+        if zmask.any(): sim.broadcast_pauli_errors('Z', zmask)
+
+        sim.do(meas_block)
+
+    dets = sim.get_detector_flips()         # shape: (num_detectors, 1)
+    obs  = sim.get_observable_flips()       # shape: (num_observables, 1)
+    meas = sim.get_measurement_flips()      # shape: (num_measurements, 1)
+    return dets, obs, meas
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# rng = np.random.default_rng(123)
+# m = np.zeros((64, 10_000), dtype=int)
+# m, events = spatial_clusters(m, 64, 10_000, qubit_nums=list(range(64)),
+#                             p_start=0.02, clusters_per_burst=1, rad=2, pr_to_neigh=0.4, rng=rng)
+# print("len(clusters) =", len(events)) 
+# m, evs=extend_clusters(m, qus=64, rounds=10_000, clusters=events, p_start=0.2)
+
+# print("len(events) =", len(evs)) 
 
 # !!!!!!!  This is how we will be able to combine the encoding circuits, once provided, that initalize a logical state, with the already existing circuits of STIM
 # def logical_state_prep() -> stim.Circuit:

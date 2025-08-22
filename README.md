@@ -26,3 +26,14 @@ Work on last function for M0.
 
 Marginalized probabilities for each category based on a non-hardware-aware idle probab (empirical average per-idle-qubit error probability per round). 
 Also made a functin for stats.py. Find out whether cat4 function moves the groups to contigeous rounds or not. (shouldnt). 
+
+## 20/08/25:
+
+Must change func #4 implementing a decay model (ok). Where else should the probabilities decay? Make a draft for FlipSim
+
+## 21/08/25: 
+
+Fix #3 never working (ok) - Re callibrated probabailities againkst 0.005. 
+M0 ready
+
+## 2208/25:
