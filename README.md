@@ -36,4 +36,6 @@ Must change func #4 implementing a decay model (ok). Where else should the proba
 Fix #3 never working (ok) - Re callibrated probabailities againkst 0.005. 
 M0 ready
 
-## 2208/25:
+## 22/08/25:
+
+Inject to FlipSim function
