@@ -3,65 +3,14 @@ from visualize import plot_surface_code_lattice
 import stim
 import stim
 import numpy as np
-from noise_injection import mask_generator, spatial_clusters, extend_clusters
+from mask import mask_generator
 from marginalize import calibrate_start_rates, build_mask_once, cfg
-from stats import measure_mask_stats
-
-
-# # Build your circuit
-# d = 5
-# rounds = 15
-# circ, meta = build_planar_surface_code(d, rounds, noisy=False)
-
-# # List of data qubit indices
-# data_ids = list(meta["data_qubits"].values())
-
-# # # Error probability
-# # p = 0.05
-
-# # # Insert X and Z noise after every round
-# # noisy_circ = stim.Circuit()
-# # noisy_circ += circ  # start with your clean circuit
-
-# # # For a quick test, append noise after each reset/measurement cycle
-# # for _ in range(rounds):
-# #     noisy_circ.append("X_ERROR", data_ids, p)
-# #     noisy_circ.append("Z_ERROR", data_ids, p)
-
-# # # Run
-# sampler = stim.CompiledDetectorSampler(circ)
-# res = sampler.sample(shots=1)
-
-# # Reshape into (rounds, num_stabilizers)
-# num_x = len(meta["x_stabilizers"])
-# num_z = len(meta["z_stabilizers"])
-# per_round = num_x + num_z
-# reshaped = res.reshape(rounds, per_round)
-# print((reshaped[1] != reshaped[0]).sum())  # Should be 0 for noiseless
-# print((reshaped[2] != reshaped[1]).sum())  # Should be 0 for noiseless
-
-# for r in range(rounds):
-#     print(f"\nRound {r+1}\nX stabs:", reshaped[r][:num_x])
-#     true_counts_x = reshaped[r, :num_x].sum(axis=0)
-#     print(f"Z stabs:", reshaped[r][num_x:])
-#     true_counts_z = (reshaped)[r, num_x:].sum(axis=0)
-#     print(f'Trues x:{true_counts_x} \t Falses x: {num_x - true_counts_x}')
-
-#     print(f'Trues z:{true_counts_z} \t Falses z: {num_z - true_counts_z}')
-# # plot_surface_code_lattice(
-# #     d,
-# #     meta['data_qubits'],
-# #     meta['x_stabilizers'],
-# #     meta['z_stabilizers']
-# # )
-
-# print("Num X stabilizers:", len(meta["x_stabilizers"]))
-# print("Num Z stabilizers:", len(meta["z_stabilizers"]))
-# print(f'Data qubits: {len(meta["data_qubits"])}/25')
-# print(f'Total qubits: {meta["total_qubits"]}/49')
+from stats import measure_mask_stats, measure_stacked_mask_stats
+from inject import run_batched_data_only
+from helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks
 
 # Generate the rotated surface code circuit:
-distance = 3
+distance = 5
 rounds = 10
 circuit = stim.Circuit.generated(
     "surface_code:rotated_memory_x",
@@ -100,70 +49,24 @@ print(circuit)
 
 
 print(mr_indices)
-#print(circuit.diagram('timeline-text'))
-# print(circuit)
 
 
 
-# print(circuit.num_qubits)
-# coords = list(circuit.get_final_qubit_coordinates().items())
-# print(coords)
-# print(f'All qubits are: {len(coords)}')
-# data_qubit_indices = [q for q, (x, y) in coords if (x + y) % 2 == 0]
-# print(f'Data qubits ({len(data_qubit_indices)}) indices:{data_qubit_indices}')
-
-
-# print(f'Data qubits ({len(data)}): {data}\n Anchillas: {anc}\n All qubits: {coor}')
-
-
-
-
-def get_data_and_ancilla_ids_by_parity(circuit: stim.Circuit, distance: int):
-    # 1) coords: dict {qid: (x, y)}
-    coords = circuit.get_final_qubit_coordinates()
-    qids, xy = zip(*coords.items())
-    qids = np.array(qids, dtype=int)
-    xy = np.array(xy, dtype=int)  # shape (N, 2)
-
-    x, y = xy[:, 0], xy[:, 1]
-    both_even = (x % 2 == 0) & (y % 2 == 0)
-    both_odd  = (x % 2 == 1) & (y % 2 == 1)
-
-    cand_even = qids[both_even]
-    cand_odd  = qids[both_odd]
-
-    d2 = distance * distance
-    if len(cand_even) == d2 and len(cand_odd) != d2:
-        data_ids = np.sort(cand_even)
-    elif len(cand_odd) == d2 and len(cand_even) != d2:
-        data_ids = np.sort(cand_odd)
-    else:
-        # Fallback: pick the parity with size closest to d^2
-        # (useful if Stim changes internals; still deterministic)
-        if abs(len(cand_even) - d2) <= abs(len(cand_odd) - d2):
-            data_ids = np.sort(cand_even)
-        else:
-            data_ids = np.sort(cand_odd)
-
-    ancilla_ids = np.array(sorted(set(qids) - set(data_ids)), dtype=int)
-    return data_ids.tolist(), ancilla_ids.tolist()
-
-
-d,a=get_data_and_ancilla_ids_by_parity(circuit, 3)
-print(f'\n\nDistance: {distance}\nData qubits ({len(d)}): {d}\nAnchillas ({len(a)}): {a}\n All of them ({len(d+a)}): {d+a}')
-all_qubits=d+a
+data_qus,anchs=get_data_and_ancilla_ids_by_parity(circuit, distance)
+print(f'\n\nDistance: {distance}\nData qubits ({len(data_qus)}): {data_qus}\nAnchillas ({len(anchs)}): {anchs}\n All of them ({len(data_qus+anchs)}): {data_qus+anchs}')
+all_qubits=data_qus+anchs
 
 ###!!!!!!!!!!!!!!!!!!Dont forget to map data qubits to 0-d²-1 !!!!!!!!! 
 
 
 batch_marg=256
-iters_marg=10
+iters_marg=15
 
 cfg_ = calibrate_start_rates(
     build_mask_once=build_mask_once,
-    qubits=len(d), 
+    qubits=len(data_qus), 
     rounds=rounds, 
-    qubits_ind=d,
+    qubits_ind=data_qus,
     cfg=cfg,
     p_idle_target=cfg["p_idle"],
     batch=batch_marg,
@@ -176,176 +79,153 @@ for key in ("t1", "t2", "t3", "t4"):
     if key in cfg_ and cfg_[key].get("enabled", False) and "p_start" in cfg_[key]:
         print(cfg_[key]["p_start"])
 
-# cfgg={'p_idle': 0.005, 
-#       't1': {'enabled': True, 'p_start': 0.001966650917194283, 'rad': 2, 'clusters': 1, 'wrap': False, 'pr_to_neigh': 0.3, 'pX': 0.5, 'pZ': 0.5}, 
-#       't2': {'enabled': True, 'p_start': 0.0009833254585971416, 'gamma': 0.6, 'pX': 0.5, 'pZ': 0.5}, 
-#       't3': {'enabled': True, 'p_start': 0.003933301834388566, 'gamma': 0.6, 'pX': 0.5, 'pZ': 0.5}, 
-#       't4': {'enabled': True, 'p_start': 0.00019666509171942833, 'gamma': 0.6, 'qset_min': 2, 'qset_max': 5, 'pX': 0.5, 'pZ': 0.5, 'disjoint_qubit_groups': True}
-#       }
-# print(f'CFG: \n{cfg}')
-# print(f"\n\n\nCalibrated start_probs (batch: {256}, iters: {6}):")
-# for key in ("t1", "t2", "t3", "t4"):
-#     if key in cfg and cfg[key].get("enabled", False) and "p_start" in cfg[key]:
-#         print(cfg[key]["p_start"])
 
 
 ## I am thinking of generating M_data and M_anchilla and M_CNOT. this way, we will have them ckeared out, so somehow we can combine them at the end 
 cat_counts=[0, 0, 0, 0]
 
 for _ in range(1000):
-
-    M_data, actives=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, cfg=cfg_, actives_list=True)
-    measure_mask_stats(m=M_data, actives=actives)
+    #use the calibrated cfg to generate masks
+    M_data, actives=mask_generator(qubits=len(data_qus), rounds=rounds, qubits_ind=data_qus, cfg=cfg_, actives_list=True)
+    #measure_mask_stats(m=M_data, actives=actives)
     cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
 #print(f'\nFinal Mask M0:\n{M_data}')
 print(f'Each category coutns: {cat_counts}')
 
 
-M_data=mask_generator(qubits=len(d), rounds=rounds, qubits_ind=d, cfg=cfg_, actives_list=False)
-print(f'\nFinal Mask M0:\n{M_data}')
+M_data=mask_generator(qubits=len(data_qus), rounds=rounds, qubits_ind=data_qus, cfg=cfg_, actives_list=False)
+print(f'\nFinal Mask M0:\n{M_data}\n\n\n')
 
 
 #---------------------------------  FlipSIm-------------------------------------------------
 
-sim = stim.FlipSimulator(
-    batch_size=rounds,
- 
-    disable_stabilizer_randomization=True,  # Usually desirable for deterministic injection
-)
+S=1024
+res = [
+    mask_generator(
+        qubits=len(data_qus),
+        rounds=rounds,
+        qubits_ind=data_qus,   # you’re already generating data-only rows
+        cfg=cfg_,
+        actives_list=True
+    )
+    for _ in range(S)
+]
+
+# Unpack results
+Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
+M_data = np.stack(Ms, axis=-1).astype(np.int8)       # -> shape (D, R, S)
+actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
+
+print("M_data shape:", M_data.shape)
+print("actives shape:", actives.shape)
 
 
-import numpy as np, stim
-
-def inject_with_flip_sim(circ_by_round, data_ids, anc_ids, M_data, M_anc):
-    num_qubits  = max(max(data_ids, default=-1), max(anc_ids, default=-1)) + 1
-    sim = stim.FlipSimulator(batch_size=1, num_qubits=num_qubits,
-                             disable_stabilizer_randomization=True)
-
-    for r, parts in enumerate(circ_by_round):
-        # parts = (prefix_until_data_injection, between_data_and_ancilla, measure_block)
-        pre, between, meas_block = parts
-
-        sim.do(pre)
-
-        # --- inject DATA errors for round r ---
-        xmask = np.zeros((num_qubits, 1), np.bool_)
-        ymask = np.zeros((num_qubits, 1), np.bool_)
-        zmask = np.zeros((num_qubits, 1), np.bool_)
-        xmask[data_ids, 0] = (M_data[data_ids, r] == 1)
-        ymask[data_ids, 0] = (M_data[data_ids, r] == 3)
-        zmask[data_ids, 0] = (M_data[data_ids, r] == 2)
-        if xmask.any(): sim.broadcast_pauli_errors('X', xmask)
-        if ymask.any(): sim.broadcast_pauli_errors('Y', ymask)
-        if zmask.any(): sim.broadcast_pauli_errors('Z', zmask)
-
-        sim.do(between)
-
-        # --- inject ANCILLA errors just before measurement ---
-        xmask[:] = False; ymask[:] = False; zmask[:] = False
-        xmask[anc_ids, 0] = (M_anc[anc_ids, r] == 1)
-        ymask[anc_ids, 0] = (M_anc[anc_ids, r] == 3)
-        zmask[anc_ids, 0] = (M_anc[anc_ids, r] == 2)
-        if xmask.any(): sim.broadcast_pauli_errors('X', xmask)
-        if ymask.any(): sim.broadcast_pauli_errors('Y', ymask)
-        if zmask.any(): sim.broadcast_pauli_errors('Z', zmask)
-
-        sim.do(meas_block)
-
-    dets = sim.get_detector_flips()         # shape: (num_detectors, 1)
-    obs  = sim.get_observable_flips()       # shape: (num_observables, 1)
-    meas = sim.get_measurement_flips()      # shape: (num_measurements, 1)
-    return dets, obs, meas
+M_data_local=make_M_data_local_from_masks(masks=M_data, data_ids=data_qus, rounds=rounds )
+print(f'M local is of shape: {M_data_local.shape}')
 
 
 
+prefix, pre_round, meas_round, anc_ids, repeat_count = extract_round_template(circuit)
+
+
+circ_by_round = [(pre_round, stim.Circuit(), meas_round) for _ in range(rounds)]
+
+round0 = stim.Circuit(); round0 += pre_round; round0 += meas_round
+print_svg(round0, "r0")
+print_svg(circuit, "circuit")
+#print(round0)   #only one form #round 
+
+
+# for i, item1 in enumerate(circ_by_round):
+#     print(f'round?{i}:\n ')
+#     for j in circ_by_round[i]:
+
+#         print(f'item :\n{j}\n')
 
 
 
+print(f'Lets check ids:\nData: {data_qus}\nAnchillas: {anchs}')  #  (All ok!)
+
+stats = measure_stacked_mask_stats(M_data_local, "M_data_local")
+# sanity vs target p_idle:
+p_idle = 0.005
+print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
+
+
+##Check wtf these are and the physics behind them 
+cnt = stats["per_shot_counts"]            # from the meter we made
+print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+# Fano >> 1 means bursty (correlated); Fano ~ 1 means near-Poisson iid.
+
+## einai entaksei gia twra na xrhsimopoimv chat giati kanw ta statistika klp. Sto montelo kane kai tipota moni sou.
+#  Den einai na paizoyme me ton kwdika gia ta statistika, marginalization klp
 
 
 
+names = ("spatial", "temporal", "cluster_ext", "multi_scattered")
+
+print(f'\n\n')
+for i, name in enumerate(names):
+    shots_with = int((actives[i] > 0).sum())
+    total = int(actives[i].sum())
+    print(f"{name}: shots_with≥1={shots_with}/{S}  total_events={total}")
+print(f'\n\n')
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+dets, obs, meas = run_batched_data_only(circuit=circuit,M_data= M_data_local, data_ids=data_qus)
+print('Some STATS:\n')
+print(f'Detector Flips: \n{dets.any()}\n\nObservations: \n{obs}\n\n Measurement Flips: \n{meas.any()}\n')
 
 
 
 
+print("\t*detector flip rate:", dets.mean())              # fraction of (detector,shot) that are True
+print("\t *measurement flip rate:", meas.mean())           # fraction of (measurement,shot) that are True
+print("\t *shots with any detector flip:", (dets.any(axis=0)).mean())
+print("\t *detectors that fired at least Once:", int(dets.any(axis=1).sum()), "/", dets.shape[0])
+
+
+# How many shots each detector fired in:
+det_counts = dets.sum(axis=1)              # int counts per detector
+print("\t *top-5 detectors by count:", det_counts[:5])
+
+# Which shots had any detector flip?
+shots_with = dets.any(axis=0)              # shape (S,)
+print("\t *shots with any detector flip:", shots_with.sum(), "/", shots_with.size)
+
+
+# # force Z on first data row in round 0 for first 16 shots
+# M_forced = M_data_local.copy()
+# M_forced[:] = 0
+# M_forced[0, 0, :16] = 2  # your codes: X=1, Z=2, Y=3
+# dets_f, _, _ = run_batched_data_only(circuit, M_forced, data_ids=data_qus)
+
+# who = np.where(dets_f.any(axis=1))[0]
+# print("detectors triggered by forced Z (subset):", who[:20])
 
 
 
 
+# Toy: ancilla a=0, data d=1. Measure an X-check on data via H-CNOT-H then MR(a).
+# toy = stim.Circuit("""
+# H 0
+# CX 0 1
+# H 0
+# MR 0
+# DETECTOR rec[-1]
+# """)
 
-# rng = np.random.default_rng(123)
-# m = np.zeros((64, 10_000), dtype=int)
-# m, events = spatial_clusters(m, 64, 10_000, qubit_nums=list(range(64)),
-#                             p_start=0.02, clusters_per_burst=1, rad=2, pr_to_neigh=0.4, rng=rng)
-# print("len(clusters) =", len(events)) 
-# m, evs=extend_clusters(m, qus=64, rounds=10_000, clusters=events, p_start=0.2)
+# S = 16
+# sim = stim.FlipSimulator(batch_size=S, num_qubits=2, disable_stabilizer_randomization=True)
 
-# print("len(events) =", len(evs)) 
+# # Inject a Z on data (q=1) BEFORE the round
+# xmask = np.zeros((2, S), np.bool_)
+# ymask = np.zeros((2, S), np.bool_)
+# zmask = np.zeros((2, S), np.bool_)
+# zmask[1, :] = True
 
-# !!!!!!!  This is how we will be able to combine the encoding circuits, once provided, that initalize a logical state, with the already existing circuits of STIM
-# def logical_state_prep() -> stim.Circuit:
-#     c = stim.Circuit()
-#     # Example: apply logical X or other operations to flip logical state
-#     # Or build your encoding circuit here
-#     # For illustration:
-#     c.append("H", [0])  # logical operator acting on physical qubits (example only)
-#     return c
+# sim.broadcast_pauli_errors(pauli='Z', mask=zmask)  # always apply
+# sim.do(toy)
 
-# encoding_circuit = logical_state_prep()
-
-# # Combine encoding with QEC rounds
-# circ = encoding_circuit + circuit
-# # Compile for fast sampling:
-# sampler = stim.CompiledDetectorSampler(circ)
-
-
-# # Pseudocode for integrating custom state preparation
-# base_circ = stim.Circuit.generated("surface_code:rotated_memory_z", distance=5, rounds=3, 
-#                                    after_clifford_depolarization=0.02 )
-# # base_circ now contains: Reset data to |0>, ancilla resets, syndrome cycles, final measurements.
-
-# # Remove the automatic data-qubit resets from base_circ, since we’ll handle those.
-# # (Stim’s generated circuit starts with lines like “R …” or “RX …” for data qubits.)
-# base_circ_without_init = base_circ.copy()
-# base_circ_without_init.clear_range(0, 4)
-
-# # Now build a new circuit with our custom init:
-# full_circ = stim.Circuit()
-# # Reset all physical qubits (or prepare in a simple known state as a baseline)
-# full_circ.append_from_stim_program_text("R 0 1 2 ... all data qubit indices ...")
-# # Apply your encoding gates to prepare the desired logical state on the data qubits:
-# c=stim.Circuit.generated("surface code:rotated_memory_z", distance=5)
-# full_circ += c 
-# # Now append the rest of the surface code syndrome measurement rounds:
-# full_circ += base_circ_without_init
-# sampler = stim.CompiledDetectorSampler(full_circ)
-
-
-
-'''The idea is that you perform your encoding right after the qubits are fresh/reset, then let the standard stabilizer measurement rounds run. 
-Make sure that after your encoding, the system is indeed in a valid code state (i.e. all stabilizer checks would be +1). If your encoding circuit is correct,
- the first round of syndrome measurements should report no errors (all syndromes trivial), since you haven’t introduced any physical errors yet – you’ve just prepared a code state. 
- (If you do see non-trivial syndrome in round 1 with no noise, that signals your preparation left the qubit in a state outside the code space for some stabilizer – you’d want to adjust 
- the encoding procedure in that case.)'''
+# dets = sim.get_detector_flips()
+# print("toy dets any?", dets.any())   # EXPECT: True

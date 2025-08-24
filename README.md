@@ -38,4 +38,12 @@ M0 ready
 
 ## 22/08/25:
 
-Inject to FlipSim function
+Inject to FlipSim function. 
+
+## 23/08/25:
+
+How will the syndromes be generated? Will it be from shots of running the circui (steps) and then reset and do it again?
+
+## 24/08/25: 
+
+Check exactly to figure out what happening with FlipSim. Start M1 , at least the logic

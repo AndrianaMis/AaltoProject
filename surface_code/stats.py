@@ -60,3 +60,47 @@ def measure_mask_stats(m: np.ndarray, actives, label: str = "M0") -> dict:
        # print(f'Mask: \n{m}')
 
     return report
+
+
+
+
+def measure_stacked_mask_stats(M, label="M_data_local", show_examples=5):
+    M = np.asarray(M)
+    if M.ndim == 2:  # single-shot -> add shot axis
+        M = M[:, :, None]
+    D, R, S = M.shape
+
+    nz = (M != 0)
+    nnz_total = int(nz.sum())
+    p_hat = nnz_total / (D * R * S)
+
+    # per-shot counts of error sites
+    per_shot_counts = nz.reshape(D*R, S).sum(axis=0)
+    frac_empty = float((per_shot_counts == 0).mean())
+
+    # per-round and per-qubit marginals (averaged over the other dims)
+    per_round_mean = nz.mean(axis=0).mean(axis=1)  # shape (R,)
+    per_qubit_mean = nz.mean(axis=1).mean(axis=1)  # shape (D,)
+
+    # Pauli composition
+    cntX = int((M == 1).sum()); cntZ = int((M == 2).sum()); cntY = int((M == 3).sum())
+
+    print(f"\n\n[{label}] shape={M.shape}  nnz={nnz_total}  p̂={p_hat:.6f}")
+    print(f"  shots S={S}: empty_fraction={frac_empty:.3f} (target ~ exp(-D*R*p))")
+    print(f"  counts: X={cntX}, Z={cntZ}, Y={cntY}")
+    # quick examples
+    if show_examples > 0 and nnz_total > 0:
+        idx = np.argwhere(nz)
+        for i in range(min(show_examples, idx.shape[0])):
+            d, r, s = map(int, idx[i])
+            print(f"  example[{i}]: drow={d}, round={r}, shot={s}, code={int(M[d,r,s])}")
+
+    return {
+        "shape": (D, R, S),
+        "p_hat": p_hat,
+        "empty_fraction": frac_empty,
+        "per_round_mean": per_round_mean,
+        "per_qubit_mean": per_qubit_mean,
+        "counts": {"X": cntX, "Z": cntZ, "Y": cntY},
+        "per_shot_counts": per_shot_counts,
+    }

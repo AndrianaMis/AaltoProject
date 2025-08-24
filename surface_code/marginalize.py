@@ -1,5 +1,5 @@
 
-from noise_injection import mask_generator
+from mask import mask_generator
 #------------------------------------- MARGINALIZATION ----------------------------------------------------------
 
 from typing import List, Tuple, Dict, Optional
