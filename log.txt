@@ -1,0 +1,142 @@
+Results when injecting M0 look like this:
+
+
+
+
+[M_data_local] shape=(9, 10, 1024)  nnz=378  p̂=0.004102
+  shots S=1024: empty_fraction=0.908 (target ~ exp(-D*R*p))
+  counts: X=197, Z=181, Y=0
+  example[0]: drow=0, round=0, shot=102, code=1
+  example[1]: drow=0, round=0, shot=343, code=1
+  example[2]: drow=0, round=0, shot=744, code=2
+  example[3]: drow=0, round=1, shot=91, code=1
+  example[4]: drow=0, round=1, shot=102, code=1
+
+
+target p_idle = 0.005   measured p̂ = 0.0041015625
+mean 0.369140625 var 2.4594383239746094 Fano 6.662605406746032
+
+
+
+spatial: shots_with≥1=20/1024  total_events=20
+temporal: shots_with≥1=67/1024  total_events=67
+cluster_ext: shots_with≥1=0/1024  total_events=0
+multi_scattered: shots_with≥1=8/1024  total_events=8
+
+
+
+['MR 2 9 11 13 14 16 18 25', 'DETECTOR(2, 0, 0) rec[-8]', 'DETECTOR(2, 4, 0) rec[-3]', 'DETECTOR(4, 2, 0) rec[-6]', 'DETECTOR(4, 6, 0) rec[-1]']
+Some STATS:
+
+Detector Flips: 
+True
+
+Observations: 
+[]
+
+ Measurement Flips: 
+True
+
+        *detector flip rate: 0.010806435032894737
+         *measurement flip rate: 0.06414794921875
+         *shots with any detector flip: 0.5693359375
+         *detectors that fired at least Once: 72 / 76
+         *top-5 detectors by count: [  0   0   0   0 534]
+         *shots with any detector flip: 583 / 1024
+
+
+
+
+
+
+
+M0 AND M1 NOT ENABLED:
+
+Detector Flips: 
+False
+
+Observations: 
+[]
+
+ Measurement Flips: 
+False
+
+        *detector flip rate: 0.0
+         *measurement flip rate: 0.0
+         *shots with any detector flip: 0.0
+         *detectors that fired at least Once: 0 / 76
+         *shots with any detector flip: 0 / 1024
+M anch local is of shape: (8, 10, 1024)
+M anch of size (8, 10, 1024)
+
+
+
+
+M0 ENABLED ONLY:
+Some STATS:
+
+Detector Flips: 
+True
+
+Observations: 
+[]
+
+ Measurement Flips: 
+True
+
+        *detector flip rate: 0.004574424342105263
+         *measurement flip rate: 0.00633544921875
+         *shots with any detector flip: 0.09375
+         *detectors that fired at least Once: 72 / 76
+         *shots with any detector flip: 96 / 1024
+M anch local is of shape: (8, 10, 1024)
+M anch of size (8, 10, 1024)
+
+
+
+
+
+M1 ENABLED ONLY:
+Some STATS:
+
+Detector Flips: 
+True
+
+Observations: 
+[]
+
+ Measurement Flips: 
+True
+
+        *detector flip rate: 0.002646998355263158
+         *measurement flip rate: 0.004248046875
+         *shots with any detector flip: 0.0771484375
+         *detectors that fired at least Once: 72 / 76
+         *shots with any detector flip: 79 / 1024
+M anch local is of shape: (8, 10, 1024)
+M anch of size (8, 10, 1024)
+
+
+
+
+
+
+
+M0 AND M1 BOTH ENABLED:Some STATS:
+
+Detector Flips: 
+True
+
+Observations: 
+[]
+
+ Measurement Flips: 
+True
+
+        *detector flip rate: 0.007272820723684211
+         *measurement flip rate: 0.0115234375
+         *shots with any detector flip: 0.1767578125
+         *detectors that fired at least Once: 75 / 76
+         *shots with any detector flip: 181 / 1024
+M anch local is of shape: (8, 10, 1024)
+M anch of size (8, 10, 1024)

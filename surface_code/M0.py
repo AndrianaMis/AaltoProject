@@ -544,6 +544,10 @@ def mask_generator(qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:b
     c2=False
     c3=False
     c4=False
+    # for k, wk in zip(("t1","t2","t3","t4"), (0.25, 0.6, 0.1, 0.05)):
+    #     if k in cfg and cfg[k].get("enabled", False) and "p_start" in cfg[k]:
+    #         cfg[k]["p_start"] *= wk
+
 
     if spatial_one_round:
         

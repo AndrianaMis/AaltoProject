@@ -86,6 +86,11 @@ def extract_round_template(circ: stim.Circuit):
     return prefix, pre_round, meas_round, anc_ids, repeat_count
 
 
+# simplest: a thin wrapper for readability
+def make_M_anc_local_from_masks(masks, anc_ids, row_to_global=None, rounds=None):
+    return make_M_data_local_from_masks(
+        masks=masks, data_ids=anc_ids, row_to_global=row_to_global, rounds=rounds
+    )
 
 
 

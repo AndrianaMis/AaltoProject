@@ -1,43 +1,46 @@
 import numpy as np, stim
-from mask import mask_generator
+from M0 import mask_generator
 from helpers import extract_round_template, build_circ_by_round_from_generated
 
-def run_batched_data_only(circuit, M_data, data_ids):
-    circ_by_round, anc_ids = build_circ_by_round_from_generated(circuit)  # as in our wrapper
-    if M_data.ndim == 2:
-        M_data = M_data[:, :, None]
-    D, R, S = M_data.shape
-    assert D == len(data_ids) and R == len(circ_by_round)
-    pre,_,meas = circ_by_round[0]
-    print(str(meas).splitlines()[:5])  # should start with MR ... then DETECTOR lines
+# def run_batched_data_only(circuit, M_data, data_ids):
+#     circ_by_round, anc_ids = build_circ_by_round_from_generated(circuit)  # as in our wrapper
+#    # print(f'circ by round: {len(circ_by_round)}')
+#  #   pe, bet, af=circ_by_round[1]
+#    # print(f'pre:\n{pe}\nbet.\n{bet}\nafter:{af}')
+#     if M_data.ndim == 2:
+#         M_data = M_data[:, :, None]
+#     D, R, S = M_data.shape
+#     assert D == len(data_ids) and R == len(circ_by_round)
+#     pre,_,meas = circ_by_round[0]
+#     print(str(meas).splitlines()[:5])  # should start with MR ... then DETECTOR lines
 
-    Q_total = max([0] + data_ids + anc_ids) + 1
-    sim = stim.FlipSimulator(batch_size=S, num_qubits=Q_total, disable_stabilizer_randomization=True)
+#     Q_total = max([0] + data_ids + anc_ids) + 1
+#     sim = stim.FlipSimulator(batch_size=S, num_qubits=Q_total, disable_stabilizer_randomization=True)
 
-    xmask = np.zeros((Q_total, S), np.bool_)
-    ymask = np.zeros((Q_total, S), np.bool_)
-    zmask = np.zeros((Q_total, S), np.bool_)
+#     xmask = np.zeros((Q_total, S), np.bool_)
+#     ymask = np.zeros((Q_total, S), np.bool_)
+#     zmask = np.zeros((Q_total, S), np.bool_)
 
-    for r, (pre, between, meas) in enumerate(circ_by_round):
-        # --- inject DATA errors for round r *before* the round’s entangling ---
-        mr = M_data[:, r, :]               # (D, S)
-        xmask[:] = False; ymask[:] = False; zmask[:] = False
-        xmask[data_ids, :] = (mr == 1)     # your codes: X=1, Z=2, Y=3
-        zmask[data_ids, :] = (mr == 2)
-        ymask[data_ids, :] = (mr == 3)
-        if xmask.any(): sim.broadcast_pauli_errors(pauli='X', mask=xmask)
-        if ymask.any(): sim.broadcast_pauli_errors(pauli='Y', mask=ymask)
-        if zmask.any(): sim.broadcast_pauli_errors(pauli='Z', mask=zmask)
+#     for r, (pre, between, meas) in enumerate(circ_by_round):
+#         # --- inject DATA errors for round r *before* the round’s entangling ---
+#         mr = M_data[:, r, :]               # (D, S)
+#         xmask[:] = False; ymask[:] = False; zmask[:] = False
+#         xmask[data_ids, :] = (mr == 1)     # your codes: X=1, Z=2, Y=3
+#         zmask[data_ids, :] = (mr == 2)
+#         ymask[data_ids, :] = (mr == 3)
+#         if xmask.any(): sim.broadcast_pauli_errors(pauli='X', mask=xmask)
+#         if ymask.any(): sim.broadcast_pauli_errors(pauli='Y', mask=ymask)
+#         if zmask.any(): sim.broadcast_pauli_errors(pauli='Z', mask=zmask)
 
-        # then run the round
-        sim.do(pre)
-        # (no second data window yet; between is empty for your split)
-        sim.do(meas)
+#         # then run the round
+#         sim.do(pre)
+#         # (no second data window yet; between is empty for your split)
+#         sim.do(meas)
 
-    dets = sim.get_detector_flips()    # (num_detectors, S)
-    obs  = sim.get_observable_flips()  # [] for rotated_memory_x (no observables) — expected
-    meas = sim.get_measurement_flips() # (num_measurements, S)
-    return dets, obs, meas
+#     dets = sim.get_detector_flips()    # (num_detectors, S)
+#     obs  = sim.get_observable_flips()  # [] for rotated_memory_x (no observables) — expected
+#     meas = sim.get_measurement_flips() # (num_measurements, S)
+#     return dets, obs, meas
 
 
 
@@ -155,3 +158,58 @@ Make sure that after your encoding, the system is indeed in a valid code state (
  the first round of syndrome measurements should report no errors (all syndromes trivial), since you haven’t introduced any physical errors yet – you’ve just prepared a code state. 
  (If you do see non-trivial syndrome in round 1 with no noise, that signals your preparation left the qubit in a state outside the code space for some stabilizer – you’d want to adjust 
  the encoding procedure in that case.)'''
+
+
+
+def run_batched_data_plus_anc(circuit, M_data, M_anc, data_ids, anc_ids, enable_M0: bool=True, enable_M1: bool=True):
+    circ_by_round, anc_ids_auto = build_circ_by_round_from_generated(circuit)
+    assert sorted(anc_ids) == sorted(anc_ids_auto)
+    R = len(circ_by_round)
+
+    # Normalize shapes
+    if M_data.ndim == 2: M_data = M_data[:, :, None]
+    if M_anc.ndim  == 2: M_anc  = M_anc[:, :, None]
+    D, Rm, S  = M_data.shape
+    A, Rm2, S2 = M_anc.shape
+    assert D == len(data_ids) and A == len(anc_ids)
+    assert Rm == R == Rm2 and S == S2
+
+    Q = max([0] + data_ids + anc_ids) + 1
+    sim = stim.FlipSimulator(batch_size=S, num_qubits=Q, disable_stabilizer_randomization=True)
+
+    xmask = np.zeros((Q, S), np.bool_)
+    ymask = np.zeros((Q, S), np.bool_)
+    zmask = np.zeros((Q, S), np.bool_)
+
+    for r, (pre, _, meas) in enumerate(circ_by_round):
+        # --- DATA: inject before entangling ---
+
+        if enable_M0:
+            mr = M_data[:, r, :]
+            xmask[:] = ymask[:] = zmask[:] = False
+            xmask[data_ids, :] = (mr == 1)
+            zmask[data_ids, :] = (mr == 2)
+            ymask[data_ids, :] = (mr == 3)
+            if xmask.any(): sim.broadcast_pauli_errors(pauli='X', mask=xmask)
+            if ymask.any(): sim.broadcast_pauli_errors(pauli='Y', mask=ymask)
+            if zmask.any(): sim.broadcast_pauli_errors(pauli='Z', mask=zmask)
+
+        sim.do(pre)
+
+        if enable_M1:
+        # --- ANCILLAS: inject just before measurement ---
+            ma = M_anc[:, r, :]
+            xmask[:] = ymask[:] = zmask[:] = False
+            xmask[anc_ids, :] = (ma == 1)
+            zmask[anc_ids, :] = (ma == 2)
+            ymask[anc_ids, :] = (ma == 3)
+            if xmask.any(): sim.broadcast_pauli_errors(pauli='X', mask=xmask)
+            if ymask.any(): sim.broadcast_pauli_errors(pauli='Y', mask=ymask)
+            if zmask.any(): sim.broadcast_pauli_errors(pauli='Z', mask=zmask)
+
+        sim.do(meas)
+
+    dets = sim.get_detector_flips()
+    obs  = sim.get_observable_flips()
+    meas = sim.get_measurement_flips()
+    return dets, obs, meas

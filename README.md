@@ -47,3 +47,11 @@ How will the syndromes be generated? Will it be from shots of running the circui
 ## 24/08/25: 
 
 Check exactly to figure out what happening with FlipSim. Start M1 , at least the logic
+
+
+## 03/09/25:
+
+Inject M1 (ok), start prepping M2, which is gate errors and not qubit errors. 
+
+##
+

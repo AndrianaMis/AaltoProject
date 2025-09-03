@@ -46,16 +46,16 @@ def measure_mask_stats(m: np.ndarray, actives, label: str = "M0") -> dict:
         "streaks": {"l_max": l_max, "l_mean": l_mean},
     }
     if p_hat>0:
-        print(f"\n\n[{label}] {qus}×{rounds} mask")
-        print(f"  overall occupancy p̂ = {p_hat:.6f}  (nnz={nnz}/{total})")
-        print(f"  Pauli counts: X={cnt_X}, Z={cnt_Z}, Y={cnt_Y}")
-        print(f"  longest streak: max={l_max}, mean={l_mean:.2f}")
+        # print(f"\n\n[{label}] {qus}×{rounds} mask")
+        # print(f"  overall occupancy p̂ = {p_hat:.6f}  (nnz={nnz}/{total})")
+        # print(f"  Pauli counts: X={cnt_X}, Z={cnt_Z}, Y={cnt_Y}")
+        # print(f"  longest streak: max={l_max}, mean={l_mean:.2f}")
         # top-5 noisiest qubits / rounds for quick eyeballing
         top_q = np.argsort(-per_qubit)[:5].tolist()
         top_t = np.argsort(-per_round)[:5].tolist()
-        print(f"  top qubits by occupancy: {[(int(q), float(per_qubit[q])) for q in top_q]}")
-        print(f"  top rounds by occupancy: {[(int(t), float(per_round[t])) for t in top_t]}")
-        print(f'  Cat1: {actives[0] }   Cat2: {actives[1]}   Cat3: {actives[2]}     Cat4: {actives[3]}')
+        # print(f"  top qubits by occupancy: {[(int(q), float(per_qubit[q])) for q in top_q]}")
+        # print(f"  top rounds by occupancy: {[(int(t), float(per_round[t])) for t in top_t]}")
+        # print(f'  Cat1: {actives[0] }   Cat2: {actives[1]}   Cat3: {actives[2]}     Cat4: {actives[3]}')
 
        # print(f'Mask: \n{m}')
 

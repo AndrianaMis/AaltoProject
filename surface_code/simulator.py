@@ -3,27 +3,28 @@ from visualize import plot_surface_code_lattice
 import stim
 import stim
 import numpy as np
-from mask import mask_generator
-from marginalize import calibrate_start_rates, build_mask_once, cfg
+from M0 import mask_generator, mask_init
+from marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once
 from stats import measure_mask_stats, measure_stacked_mask_stats
-from inject import run_batched_data_only
-from helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks
+from inject import  run_batched_data_plus_anc
+from helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks
+from M1 import mask_generator_M1
 
 # Generate the rotated surface code circuit:
-distance = 5
+distance = 3
 rounds = 10
 circuit = stim.Circuit.generated(
     "surface_code:rotated_memory_x",
     rounds=rounds,
-    distance=distance,
-    after_clifford_depolarization=0.0,
-    after_reset_flip_probability=0.0
+    distance=distance
+    # after_clifford_depolarization=0.0,
+    # after_reset_flip_probability=0.0
 
 )
 mr_indices = [i for i, instr in enumerate(circuit) if instr.name == 'MR']
-for mr in mr_indices:
-    print(f'mr: {mr}')
-    circuit.insert(mr, stim.CircuitInstruction('CORRELATED_ERROR',  [stim.target_x(1), stim.target_y(1)], [0.5]))
+# for mr in mr_indices:
+#     print(f'mr: {mr}')
+#     circuit.insert(mr, stim.CircuitInstruction('CORRELATED_ERROR',  [stim.target_x(1), stim.target_y(1)], [0.5]))
 
 
 # print(circuit.detector_error_model())
@@ -62,19 +63,36 @@ all_qubits=data_qus+anchs
 batch_marg=256
 iters_marg=15
 
+# weights = [0.25, 0.6, 0.1, 0.05]  # sums to 1.0
+# for k, wk in zip(("t1","t2","t3","t4"), (0.25, 0.6, 0.1, 0.05)):
+#     if k in cfg and cfg[k].get("enabled", False) and "p_start" in cfg[k]:
+#         cfg[k]["p_start"] *= wk
+
+
+
+print(f'\n\n----------------------   DATA Stats  --------------------------------------------------\n')
+
 cfg_ = calibrate_start_rates(
-    build_mask_once=build_mask_once,
+    build_mask_once=build_m0_once,
     qubits=len(data_qus), 
     rounds=rounds, 
+
     qubits_ind=data_qus,
-    cfg=cfg,
-    p_idle_target=cfg["p_idle"],
+    cfg=cfg_data,
+    p_idle_target=cfg_data["p_idle"],
     batch=batch_marg,
     iters=iters_marg,
     tol=0.05,   # ±15% is plenty for training
     verbose=True
 )
-print(f"\n\nCalibrated start_probs (batch: {batch_marg}, iters: {iters_marg}):")
+
+
+
+
+
+
+
+print(f"\n\nCalibrated start_probs for M0 (batch: {batch_marg}, iters: {iters_marg}):")
 for key in ("t1", "t2", "t3", "t4"):
     if key in cfg_ and cfg_[key].get("enabled", False) and "p_start" in cfg_[key]:
         print(cfg_[key]["p_start"])
@@ -87,14 +105,17 @@ cat_counts=[0, 0, 0, 0]
 for _ in range(1000):
     #use the calibrated cfg to generate masks
     M_data, actives=mask_generator(qubits=len(data_qus), rounds=rounds, qubits_ind=data_qus, cfg=cfg_, actives_list=True)
-    #measure_mask_stats(m=M_data, actives=actives)
+    measure_mask_stats(m=M_data, actives=actives)
     cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
-#print(f'\nFinal Mask M0:\n{M_data}')
-print(f'Each category coutns: {cat_counts}')
+# print(f'\nFinal Mask M0:\n{M_data}')
+# print(f'Each category coutns: {cat_counts}')
 
 
-M_data=mask_generator(qubits=len(data_qus), rounds=rounds, qubits_ind=data_qus, cfg=cfg_, actives_list=False)
-print(f'\nFinal Mask M0:\n{M_data}\n\n\n')
+# M_data=mask_generator(qubits=len(data_qus), rounds=rounds, qubits_ind=data_qus, cfg=cfg_, actives_list=False)
+# M_anch=mask_init(qubits=len(anchs), rounds=rounds)
+
+
+
 
 
 #---------------------------------  FlipSIm-------------------------------------------------
@@ -121,7 +142,125 @@ print("actives shape:", actives.shape)
 
 
 M_data_local=make_M_data_local_from_masks(masks=M_data, data_ids=data_qus, rounds=rounds )
-print(f'M local is of shape: {M_data_local.shape}')
+# print(f'M local is of shape: {M_data_local.shape}')
+
+
+
+# prefix, pre_round, meas_round, anc_ids, repeat_count = extract_round_template(circuit)
+
+
+# circ_by_round = [(pre_round, stim.Circuit(), meas_round) for _ in range(rounds)]
+
+# round0 = stim.Circuit(); round0 += pre_round; round0 += meas_round
+# print_svg(round0, "r0")
+# print_svg(circuit, "circuit")
+# #print(round0)   #only one form #round 
+
+
+# # for i, item1 in enumerate(circ_by_round):
+# #     print(f'round?{i}:\n ')
+# #     for j in circ_by_round[i]:
+
+# #         print(f'item :\n{j}\n')
+
+
+
+#print(f'Lets check ids:\nData: {data_qus}\nAnchillas: {anchs}')  #  (All ok!)
+stats = measure_stacked_mask_stats(M_data_local, "M_data_local")
+# sanity vs target p_idle:
+p_idle = 0.005
+print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
+
+
+##Check wtf these are and the physics behind them 
+cnt = stats["per_shot_counts"]            # from the meter we made
+print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+# Fano >> 1 means bursty (correlated); Fano ~ 1 means near-Poisson iid.
+
+# ## einai entaksei gia twra na xrhsimopoimv chat giati kanw ta statistika klp. Sto montelo kane kai tipota moni sou.
+# #  Den einai na paizoyme me ton kwdika gia ta statistika, marginalization klp
+
+
+names = ("spatial", "temporal", "cluster_ext", "multi_scattered")
+print('\nCategories stats for M0 injection')
+for i, name in enumerate(names):
+    shots_with = int((actives[i] > 0).sum())
+    total = int(actives[i].sum())
+    print(f"{name}: shots_with≥1={shots_with}/{S}  total_events={total}")
+print(f'\n\n')
+
+print(f'\n --------------------------- end data stats ------------------------------------------\n')
+
+
+
+
+
+print(f'\n\n----------------------   Anch Stats  --------------------------------------------------\n')
+
+cfg_a=calibrate_start_rates(
+    build_mask_once=build_m1_once,
+    qubits=len(anchs), 
+    rounds=rounds, 
+    qubits_ind=anchs,
+    cfg=cfg_anch,
+    p_idle_target=cfg_anch["p_idle"],
+    batch=batch_marg,
+    iters=iters_marg,
+    tol=0.05,   # ±15% is plenty for training
+    verbose=True
+)
+
+
+
+
+print(f"\n\nCalibrated start_probs for M1 (batch: {batch_marg}, iters: {iters_marg}):")
+for key in ("t1", "t2", "t3", "t4"):
+    if key in cfg_a and cfg_a[key].get("enabled", False) and "p_start" in cfg_a[key]:
+        print(cfg_a[key]["p_start"])
+
+
+
+## I am thinking of generating M_data and M_anchilla and M_CNOT. this way, we will have them ckeared out, so somehow we can combine them at the end 
+cat_counts=[0, 0, 0, 0]
+
+for _ in range(1000):
+    #use the calibrated cfg to generate masks
+    M_anch, actives=mask_generator_M1(qubits=len(anchs), rounds=rounds, qubits_ind=anchs, cfg=cfg_a, actives_list=True)
+    measure_mask_stats(m=M_anch,  actives=actives)
+    cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
+print(f'Each category coutns: {cat_counts}')
+
+
+M_anch=mask_generator_M1(qubits=len(anchs), rounds=rounds, qubits_ind=anchs, cfg=cfg_a, actives_list=False)
+
+
+
+
+
+#---------------------------------  FlipSIm-------------------------------------------------
+
+S=1024
+res = [
+    mask_generator_M1(
+        qubits=len(anchs),
+        rounds=rounds,
+        qubits_ind=anchs,   # you’re already generating data-only rows
+        cfg=cfg_a,
+        actives_list=True
+    )
+    for _ in range(S)
+]
+
+# Unpack results
+Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
+M_anch = np.stack(Ms, axis=-1).astype(np.int8)       # -> shape (D, R, S)
+actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
+
+print("M_anch shape:", M_anch.shape)
+print("actives shape:", actives.shape)
+
+
+M_anch_local=make_M_anc_local_from_masks(masks=M_anch, anc_ids=anchs, rounds=rounds )
 
 
 
@@ -144,9 +283,8 @@ print_svg(circuit, "circuit")
 
 
 
-print(f'Lets check ids:\nData: {data_qus}\nAnchillas: {anchs}')  #  (All ok!)
-
-stats = measure_stacked_mask_stats(M_data_local, "M_data_local")
+#print(f'Lets check ids:\nData: {data_qus}\nAnchillas: {anchs}')  #  (All ok!)
+stats = measure_stacked_mask_stats(M_anch_local, "MANCH_local")
 # sanity vs target p_idle:
 p_idle = 0.005
 print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
@@ -162,37 +300,66 @@ print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean(
 
 
 
-names = ("spatial", "temporal", "cluster_ext", "multi_scattered")
 
-print(f'\n\n')
+print('\nCategories stats for M1 injection')
+
 for i, name in enumerate(names):
     shots_with = int((actives[i] > 0).sum())
     total = int(actives[i].sum())
     print(f"{name}: shots_with≥1={shots_with}/{S}  total_events={total}")
 print(f'\n\n')
 
-
-dets, obs, meas = run_batched_data_only(circuit=circuit,M_data= M_data_local, data_ids=data_qus)
-print('Some STATS:\n')
-print(f'Detector Flips: \n{dets.any()}\n\nObservations: \n{obs}\n\n Measurement Flips: \n{meas.any()}\n')
+print(f'\n --------------------------- end anch stats ------------------------------------------\n')
 
 
 
 
-print("\t*detector flip rate:", dets.mean())              # fraction of (detector,shot) that are True
-print("\t *measurement flip rate:", meas.mean())           # fraction of (measurement,shot) that are True
-print("\t *shots with any detector flip:", (dets.any(axis=0)).mean())
-print("\t *detectors that fired at least Once:", int(dets.any(axis=1).sum()), "/", dets.shape[0])
 
+# after measuring p_hat_final on a big sample (e.g., S=1024)
+scale_M0 = 0.005 / 0.004069  # ≈ 1.23
+scale_M1 = 0.005 / 0.004248  # ≈ 1.18
+for k in ("t1","t2","t3","t4"):
+    if cfg_data.get(k,{}).get("enabled") and "p_start" in cfg_data[k]:
+        cfg_data[k]["p_start"] = min(1.0, cfg_data[k]["p_start"] * scale_M0)
+    if cfg_anch.get(k,{}).get("enabled") and "p_start" in cfg_anch[k]:
+        cfg_anch[k]["p_start"] = min(1.0, cfg_anch[k]["p_start"] * scale_M1)
 
-# How many shots each detector fired in:
-det_counts = dets.sum(axis=1)              # int counts per detector
-print("\t *top-5 detectors by count:", det_counts[:5])
+dets, obs, meas = run_batched_data_plus_anc(
+    circuit=circuit,
+    M_data=M_data_local,
+    M_anc=M_anch_local,
+    data_ids=data_qus,
+    anc_ids=anchs,
+    enable_M0=False,
+    enable_M1=True
+)
 
-# Which shots had any detector flip?
-shots_with = dets.any(axis=0)              # shape (S,)
-print("\t *shots with any detector flip:", shots_with.sum(), "/", shots_with.size)
+# Ensure arrays
+dets = np.asarray(dets, dtype=bool)   # detector events: (N_det, S) or (S, N_det)
+meas = np.asarray(meas, dtype=bool)   # measurement results: (A*R, S) or (S, A*R)
 
+print("\nSome STATS:")
+print(f"Detector Flips: {dets.any()}")
+print(f"Observations: {obs}")
+print(f"Measurement Flips: {meas.any()}")
+
+# Detector event rate
+print(f"  * detector flip rate: {dets.mean():.6f}")
+
+# Shots with at least one detector flip
+shots_with_det = dets.any(axis=0) if dets.shape[0] != dets.shape[1] else dets.any(axis=1)
+print(f"  * shots with any detector flip: {shots_with_det.sum()} / {shots_with_det.size}")
+
+# Detectors that fired at least once
+dets_with_hits = dets.any(axis=1) if dets.shape[0] != dets.shape[1] else dets.any(axis=0)
+print(f"  * detectors that fired at least once: {dets_with_hits.sum()} / {dets_with_hits.size}")
+
+# Simple "measurement flip rate" (just fraction of 1s in meas array)
+print(f"  * measurement 1-rate: {meas.mean():.6f}")
+
+print(f'M anch local is of shape: {M_anch_local.shape}')
+
+print(f'M anch of size {M_anch.shape}')
 
 # # force Z on first data row in round 0 for first 16 shots
 # M_forced = M_data_local.copy()
