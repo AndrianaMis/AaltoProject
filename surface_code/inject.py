@@ -213,3 +213,143 @@ def run_batched_data_plus_anc(circuit, M_data, M_anc, data_ids, anc_ids, enable_
     obs  = sim.get_observable_flips()
     meas = sim.get_measurement_flips()
     return dets, obs, meas
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def run_batched_data_anc_plus_m2(circuit, M_data, M_anc, M2, gate_pairs, data_ids, anc_ids, enable_M0: bool=True, enable_M1: bool= True, enable_M2:bool=True):
+    # Build rounds
+    from helpers import build_circ_by_round_from_generated, extract_round_template
+    circ_by_round, anc_ids_auto = build_circ_by_round_from_generated(circuit)
+    assert sorted(anc_ids) == sorted(anc_ids_auto)
+    R = len(circ_by_round)
+
+    # Normalize shapes
+    if M_data.ndim == 2: M_data = M_data[:, :, None]
+    if M_anc.ndim  == 2: M_anc  = M_anc[:, :, None]
+    if M2.ndim     == 3: M2     = M2[:, :, None, :]   # (E,R,S,2)
+
+    D, R0, S  = M_data.shape
+    A, R1, S1 = M_anc.shape
+    E, R2, S2, _= M2.shape
+    print(f'R0: {R0}, R1:{ R1}, R2:{ R2}\n S: {S}, {S1 }, {S2}')
+    assert R0 == R1 == R2 == R and S == S1 == S2
+
+    Q = max([0] + data_ids + anc_ids + [q for p in gate_pairs for q in p]) + 1
+    sim = stim.FlipSimulator(batch_size=S, num_qubits=Q, disable_stabilizer_randomization=True)
+
+    xmask = np.zeros((Q, S), np.bool_)
+    ymask = np.zeros((Q, S), np.bool_)
+    zmask = np.zeros((Q, S), np.bool_)
+
+    # --- helpers used below ---
+
+    TWO_Q = {"CZ","CX","CY","SWAP","ISWAP","SQRT_XX","SQRT_YY","SQRT_ZZ"}
+    SKIP_NAMES = {"QUBIT_COORDS", "SHIFT_COORDS"}  # metadata; not executable
+
+    def _run_inst(sim, inst: stim.CircuitInstruction):
+        """Execute a single executable instruction; skip metadata."""
+        if inst.name in SKIP_NAMES:
+            return
+        seg = stim.Circuit()
+        seg.append_operation(inst.name, inst.targets_copy(), inst.gate_args_copy())
+        sim.do(seg)
+
+    def _iter_twoq_pairs(inst: stim.CircuitInstruction):
+        """Return [(q0,q1), ...] for a (possibly batched) 2Q instruction; else []."""
+        if inst.name not in TWO_Q:
+            return []
+        vs = [t.value for t in inst.targets_copy() if t.is_qubit_target]
+        # Stim batches: e.g. 'CX 2 3 16 17 ...' → pairs (2,3), (16,17), ...
+        return [(vs[i], vs[i+1]) for i in range(0, len(vs), 2)]
+    def apply_m2_for_gate(e_idx: int, r: int):
+        q0, q1 = gate_pairs[e_idx]
+        q0 = int(q0); q1 = int(q1)
+
+        codes0 = M2[e_idx, r, :, 0]  # (S,)
+        codes1 = M2[e_idx, r, :, 1]  # (S,)
+
+        m0x = (codes0 == 1); m1x = (codes1 == 1)
+        m0y = (codes0 == 3); m1y = (codes1 == 3)
+        m0z = (codes0 == 2); m1z = (codes1 == 2)
+
+        # X legs
+        if m0x.any() or m1x.any():
+            xmask[:] = False
+            if m0x.any(): xmask[q0, m0x] = True
+            if m1x.any(): xmask[q1, m1x] = True
+            sim.broadcast_pauli_errors(pauli='X', mask=xmask)  # <-- keyword args
+
+        # Y legs
+        if m0y.any() or m1y.any():
+            ymask[:] = False
+            if m0y.any(): ymask[q0, m0y] = True
+            if m1y.any(): ymask[q1, m1y] = True
+            sim.broadcast_pauli_errors(pauli='Y', mask=ymask)  # <-- keyword args
+
+        # Z legs
+        if m0z.any() or m1z.any():
+            zmask[:] = False
+            if m0z.any(): zmask[q0, m0z] = True
+            if m1z.any(): zmask[q1, m1z] = True
+            sim.broadcast_pauli_errors(pauli='Z', mask=zmask)  # <-- keyword args
+
+
+    for r, (pre, _, meas) in enumerate(circ_by_round):
+        # --- DATA before entangling ---
+        if enable_M0:
+           # print('Enabled Maska gia Data qubits errors')
+            mr = M_data[:, r, :]
+            xmask[:] = ymask[:] = zmask[:] = False
+            xmask[data_ids, :] = (mr == 1)
+            zmask[data_ids, :] = (mr == 2)
+            ymask[data_ids, :] = (mr == 3)
+            if xmask.any(): sim.broadcast_pauli_errors(pauli='X', mask=xmask)
+            if ymask.any(): sim.broadcast_pauli_errors(pauli='Y', mask=ymask)
+            if zmask.any(): sim.broadcast_pauli_errors(pauli='Z', mask=zmask)
+
+        if enable_M2:
+            e_idx = 0
+            for inst in pre:
+                _run_inst(sim, inst)             # runs exec ops; skips metadata
+                for _ in _iter_twoq_pairs(inst): # handle batched 2Q ops
+                    apply_m2_for_gate(e_idx, r)  # inject after that gate
+                    e_idx += 1
+            assert e_idx == E, f"Round {r}: saw {e_idx} 2Q pairs, expected {E}"
+        else:
+            sim.do(pre)                          # fast path: whole pre at once
+
+
+
+
+        # --- ANCILLAS just before measurement ---
+        if enable_M1:
+        # --- ANCILLAS: inject just before measurement ---
+            ma = M_anc[:, r, :]
+            xmask[:] = ymask[:] = zmask[:] = False
+            xmask[anc_ids, :] = (ma == 1)
+            zmask[anc_ids, :] = (ma == 2)
+            ymask[anc_ids, :] = (ma == 3)
+            if xmask.any(): sim.broadcast_pauli_errors(pauli='X', mask=xmask)
+            if ymask.any(): sim.broadcast_pauli_errors(pauli='Y', mask=ymask)
+            if zmask.any(): sim.broadcast_pauli_errors(pauli='Z', mask=zmask)
+
+        sim.do(meas)
+
+    dets = sim.get_detector_flips()
+    obs  = sim.get_observable_flips()
+    meas = sim.get_measurement_flips()
+    return dets, obs, meas

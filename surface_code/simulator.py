@@ -4,11 +4,12 @@ import stim
 import stim
 import numpy as np
 from M0 import mask_generator, mask_init
-from marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once
-from stats import measure_mask_stats, measure_stacked_mask_stats
-from inject import  run_batched_data_plus_anc
-from helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks
+from marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
+from stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_mask_stats
+from inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
+from helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs
 from M1 import mask_generator_M1
+from M2 import mask_generator_M2
 
 # Generate the rotated surface code circuit:
 distance = 3
@@ -61,7 +62,7 @@ all_qubits=data_qus+anchs
 
 
 batch_marg=256
-iters_marg=15
+iters_marg=25
 
 # weights = [0.25, 0.6, 0.1, 0.05]  # sums to 1.0
 # for k, wk in zip(("t1","t2","t3","t4"), (0.25, 0.6, 0.1, 0.05)):
@@ -314,6 +315,88 @@ print(f'\n --------------------------- end anch stats --------------------------
 
 
 
+print('\n-------------------M2 stats---------------------------\n')
+
+
+
+
+
+
+
+cx, datss, anchs, repeates=extract_template_cx_pairs(circuit, distance    )
+print(f'CX gates:{ cx}\n Datas: {datss}\n Anchillas: {anchs}\n Repeats: {repeates}\n\n')
+
+cfg_m2 = calibrate_start_rates_m2(
+    build_mask_once=build_m2_once,
+    cfg=cfg_m2,
+    p_idle_target=0.003,   # e.g., a bit smaller than M0/M1
+    batch=batch_marg,
+    iters=iters_marg,
+    tol=0.10,
+    verbose=True,
+    gates=cx,
+    rounds=rounds
+)
+
+print(f"\n\nCalibrated start_probs for M1 (batch: {batch_marg}, iters: {iters_marg}):")
+for key in ("t1", "t2", "t3", "t4"):
+    if key in cfg_m2 and cfg_m2[key].get("enabled", False) and "p_start" in cfg_m2[key]:
+        print(cfg_m2[key]["p_start"])
+
+cat_counts=[0, 0, 0, 0]
+
+for _ in range(1000):
+    #use the calibrated cfg to generate masks
+    M_2, actives=mask_generator_M2(gates=cx, rounds=rounds,  cfg=cfg_m2, actives_list=True)
+    cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
+print(f'Each category coutns: {cat_counts}\n\n')
+
+
+
+E=len(cx)
+M2, actives=mask_generator_M2(gates=cx , rounds=rounds, cfg=cfg_m2, actives_list=True)
+print("[M2 stats]", m2_mask_stats(M2))
+
+#print(f'M2: \n{M2[:,:,1]}')
+
+S=1024
+res = [
+    mask_generator_M2(
+        gates=cx,
+        rounds=rounds,
+        cfg=cfg_m2,
+        actives_list=True
+    )
+    for _ in range(S)
+]
+
+
+Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
+M_2 = np.stack(Ms, axis=-2).astype(np.int8)    # -> (E,R,S,2)
+print("M2 shape:", M_2.shape)
+actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
+
+
+print("M_gates shape:", M_2.shape)
+print("actives shape:", actives.shape)
+
+
+
+stats=measure_m2_mask_stats(M_2, label="M2")
+p_idle = 0.005
+print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
+
+
+##Check wtf these are and the physics behind them 
+cnt = stats["per_shot_counts"]            # from the meter we made
+print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+
+
+
+
+
+print('\n ---------------------------end M2 ----------------------------------\n\n')
+
 
 # after measuring p_hat_final on a big sample (e.g., S=1024)
 scale_M0 = 0.005 / 0.004069  # ≈ 1.23
@@ -324,14 +407,19 @@ for k in ("t1","t2","t3","t4"):
     if cfg_anch.get(k,{}).get("enabled") and "p_start" in cfg_anch[k]:
         cfg_anch[k]["p_start"] = min(1.0, cfg_anch[k]["p_start"] * scale_M1)
 
-dets, obs, meas = run_batched_data_plus_anc(
+dets, obs, meas = run_batched_data_anc_plus_m2(
     circuit=circuit,
     M_data=M_data_local,
     M_anc=M_anch_local,
     data_ids=data_qus,
+    M2=M_2,
+    gate_pairs=cx,
+
     anc_ids=anchs,
-    enable_M0=False,
-    enable_M1=True
+    enable_M0=True,
+    enable_M1=True,
+
+    enable_M2=True
 )
 
 # Ensure arrays
@@ -357,9 +445,24 @@ print(f"  * detectors that fired at least once: {dets_with_hits.sum()} / {dets_w
 # Simple "measurement flip rate" (just fraction of 1s in meas array)
 print(f"  * measurement 1-rate: {meas.mean():.6f}")
 
-print(f'M anch local is of shape: {M_anch_local.shape}')
+print(f'\nM0 is of shape: {M_data.shape}')
 
-print(f'M anch of size {M_anch.shape}')
+print(f'M1 if of shape: {M_anch.shape}')
+print(f'M2 is of shape: {M_2.shape} ')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 # # force Z on first data row in round 0 for first 16 shots
 # M_forced = M_data_local.copy()

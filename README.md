@@ -53,5 +53,10 @@ Check exactly to figure out what happening with FlipSim. Start M1 , at least the
 
 Inject M1 (ok), start prepping M2, which is gate errors and not qubit errors. 
 
-##
+## 08/08/25: 
 
+Inject M2 (OK), marginalize ok
+
+## 09/08/25: 
+
+#3 and #4 categories of M2.

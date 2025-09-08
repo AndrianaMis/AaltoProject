@@ -3,7 +3,11 @@ import re
 import stim
 import numpy as np
 
+from typing import List, Tuple, Dict, Optional
 
+import numpy as np
+import random
+I, X, Z, Y = 0, 1, 2, 3
 
 
 
@@ -269,3 +273,100 @@ def build_circ_by_round_from_generated(circ: stim.Circuit):
         circ_by_round.append((pre_tpl, stim.Circuit(), meas_tpl))
 
     return circ_by_round, anc_ids
+
+
+
+
+
+
+
+
+
+
+def extract_template_cx_pairs(circuit, distance):
+    prefix, pre_round, meas_round, anc_ids, repeat_count = extract_round_template(circuit)
+    data_ids, anc_ids2 = get_data_and_ancilla_ids_by_parity(circuit, distance)
+
+    cx_pairs = []
+    for inst in pre_round:
+        if inst.name == "CX":
+            vals = [t.value for t in inst.targets_copy() if t.is_qubit_target]
+            # group into (control, target) pairs
+            for i in range(0, len(vals), 2):
+                c, t = vals[i], vals[i+1]
+                if (c in data_ids and t in anc_ids) or (c in anc_ids and t in data_ids):
+                    cx_pairs.append((c, t))
+                else:
+                    # if you want *all* CX regardless of roles, just append unconditionally
+                    cx_pairs.append((c, t))
+    return cx_pairs, data_ids, anc_ids, repeat_count
+
+
+
+
+def _compose_xz_to_y(existing: int, new: int) -> int:
+    """OR-like composition without cancellation; X+Z or Z+X -> Y; once Y, keep Y."""
+    if existing == I:
+        return new
+    if existing == Y or new == Y:
+        return Y
+    if (existing, new) in [(X, Z), (Z, X)]:
+        return Y
+    return existing  # keep first writer otherwise
+
+def _sample_single_pauli(rng: np.random.Generator, pX: float, pZ: float) -> int:
+    probs = np.array([pX, pZ], dtype=float)
+    if probs.sum() <= 0:
+        return X
+    probs /= probs.sum()
+    return int([X, Z][rng.choice([0, 1], p=probs)])
+
+def _sample_pair_pauli(
+    rng: np.random.Generator,
+    *,
+    mode: str = "biased_product",
+    pX: float = 0.5,
+    pZ: float = 0.5,
+    no_II: bool = True
+) -> Tuple[int, int]:
+    """
+    Return a pair of single-qubit Pauli codes (c0, c1) from {I,X,Z,Y} but
+    we only *sample* X/Z, with Y arising from overlaps when composing hits.
+    mode="biased_product": independently draw X/Z on each leg with (pX,pZ).
+    If no_II, resample to avoid (I,I).
+    """
+    if mode == "biased_product":
+        while True:
+            c0 = _sample_single_pauli(rng, pX, pZ) if rng.random() < 1.0 else I
+            c1 = _sample_single_pauli(rng, pX, pZ) if rng.random() < 1.0 else I
+            if not (no_II and c0 == I and c1 == I):
+                return c0, c1
+    else:
+        # fallback
+        return _sample_single_pauli(rng, pX, pZ), _sample_single_pauli(rng, pX, pZ)
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+def sample_geometric_len(rng: np.random.Generator, gamma: float, max_len: Optional[int] = None) -> int:
+    """
+    L >= 1, P(L=ℓ) = (1-γ) * γ^(ℓ-1). Mean = 1 / (1 - γ).
+    """
+    L = 1
+    while rng.random() < gamma:
+        L += 1
+        if max_len is not None and L >= max_len:
+            break
+    return L
+
+

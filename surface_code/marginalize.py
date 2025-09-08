@@ -1,6 +1,7 @@
 
 from M0 import mask_generator
 from M1 import mask_generator_M1
+from M2 import mask_generator_M2
 #------------------------------------- MARGINALIZATION ----------------------------------------------------------
 
 from typing import List, Tuple, Dict, Optional
@@ -85,8 +86,89 @@ def build_m1_once(qubits:int, rounds:int, qubits_ind:List, cfg):
 
 
 
+def build_m2_once(gates, r, cfg_m2
+                  ):
+    # ONE shot → returns (E,R,2)
+    return mask_generator_M2(
+        gates=gates,
+        rounds=r,
+        cfg=cfg_m2,
+        
+        actives_list=False
+    )
 
 
+
+
+# ---- M2 calibration helpers ----
+
+import numpy as np
+
+def empirical_marginal_rate_m2(masks: list[np.ndarray]) -> float:
+    """
+    Each mask can be either (E,R,2) [per-shot] or (E,R,S,2) [stacked].
+    For M2 we define a 'site' as a (gate,round) event regardless of leg,
+    so a site is nonzero if *either* leg is non-identity.
+    """
+    tot_sites = 0
+    nonzero_sites = 0
+    for M in masks:
+        M = np.asarray(M)
+        if M.ndim == 3:          # (E,R,2) per-shot
+            occ = (M != 0).any(axis=-1)        # (E,R)
+            tot_sites += occ.size
+            nonzero_sites += int(occ.sum())
+        elif M.ndim == 4:        # (E,R,S,2) stacked
+            occ = (M != 0).any(axis=-1)        # (E,R,S)
+            # average over shots so each site contributes in [0,1]
+            # (alternatively, treat each (E,R,S) as sites—but then S changes the target)
+            site_rate = occ.mean(axis=-1)      # (E,R)
+            tot_sites += site_rate.size
+            nonzero_sites += float(site_rate.sum())
+        else:
+            raise ValueError(f"Unexpected M2 mask ndim={M.ndim}, shape={M.shape}")
+    return nonzero_sites / max(1, tot_sites)
+
+
+def calibrate_start_rates_m2(
+    build_mask_once,   # callable: () -> np.ndarray of shape (E,R,2)   [one shot]
+    cfg: dict,
+    gates:list[tuple[int,int]],
+    rounds:int,
+    p_idle_target: float = 3e-3,
+    batch: int = 64,
+    iters: int = 6,
+    tol: float = 0.15,
+    min_scale: float = 0.3,
+    max_scale: float = 3.0,
+    verbose: bool = True,
+  
+) -> dict:
+    """
+    Calibrates M2 start rates so that the per-(gate,round) marginal matches p_idle_target.
+    Assumes build_mask_once returns a *single-shot* mask (E,R,2).
+    """
+    if verbose:
+        print("\n--- Calibrating M2 start rates ---")
+    for k in range(iters):
+        masks = [build_mask_once(gates, rounds, cfg_m2) for _ in range(batch)]   # -> list of (E,R,2)
+        p_hat = empirical_marginal_rate_m2(masks)
+        if verbose:
+            print(f"[M2 cal] iter {k}: empirical p_hat={p_hat:.6f} (target {p_idle_target:.6f})")
+
+        scale = (max_scale if p_hat == 0 else float(np.clip(p_idle_target / p_hat, min_scale, max_scale)))
+
+        # Scale enabled t-blocks that have p_start
+        for key in ("t1", "t2", "t3", "t4"):
+            blk = cfg.get(key, {})
+            if blk.get("enabled", False) and ("p_start" in blk):
+                blk["p_start"] = float(np.clip(blk["p_start"] * scale, 0.0, 1.0))
+
+        if abs(p_hat - p_idle_target) <= tol * p_idle_target:
+            if verbose:
+                print(f"[M2 cal] done: within ±{int(tol*100)}% of target.")
+            break
+    return cfg
 
 
 cfg_data= {
@@ -161,7 +243,7 @@ cfg_anch = {
 
     # --- #3 Streaky clusters (off until verified) ---
     "t3": {
-        "enabled": False,       # was producing 0 events—disable for now
+        "enabled": True,       # was producing 0 events—disable for now
         "p_start": 3.0e-4,      # placeholder; ignored while disabled
         "gamma": 0.6
     },
@@ -180,4 +262,24 @@ cfg_anch = {
         "k_min": 2,
         "k_max": 5
     }
+}
+
+
+
+
+
+
+cfg_m2 = {
+  "p_idle": 0.003,   # target marginal for M2; calibrate with your loop
+  "pairs": {         # CZ-biased example
+    "ZZ": 0.40, "IZ": 0.15, "ZI": 0.15,
+    "XX": 0.10, "XZ": 0.08, "ZX": 0.08,
+    "IX": 0.02, "XI": 0.02
+    # omit Y* and *Y; II is implicitly forbidden
+  },
+  "t1": {"enabled": True, "p_start": 2.0e-4, "G_min": 2, "G_max": 6, "pX": 0.5, "pZ": 0.5},
+  "t2": {"enabled": True, "p_start": 8.0e-4, "gamma": 0.8},
+  "t3": {"enabled": False, "p_start": 3.0e-4, "k_min": 2, "k_max": 5, "decay_model": "power", "decay_n": 2.0},
+  "t4": {"enabled": False, "p_start": 1.5e-4, "G_min": 2, "G_max": 6, "k_min": 2, "k_max": 5,
+         "decay_model": "power", "decay_n": 2.0, "restrict_by_shared": "anc"}
 }

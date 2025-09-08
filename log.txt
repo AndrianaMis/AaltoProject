@@ -140,3 +140,166 @@ True
          *shots with any detector flip: 181 / 1024
 M anch local is of shape: (8, 10, 1024)
 M anch of size (8, 10, 1024)
+
+
+
+
+
+
+Working note (M0/M1 status)
+
+M0 (data masks)
+
+Inject before each round’s pre.
+
+Codes: I=0, X=1, Z=2, Y=3. Non-depolarizing (X/Z; Y from overlap or tiny direct-Y if desired).
+
+Correlation categories: #1 spatial, #2 streaks (primary), #3 streaky clusters, #4 multi-round multi-qubit.
+
+Shape: (D, R, S).
+
+Calibration: calibrate_start_rates to p_idle≈0.005, one global scale (keeps category ratios).
+
+Current: t3 unreliable → disabled until it emits cells.
+
+M1 (ancilla SPAM, Z-basis MR)
+
+Inject right before meas each round.
+
+Channel: X-dominant, small Y (fY≈0.05), Z≈0.
+
+Correlations: emphasize #2 streaks; #1/#4 small; t3 off.
+
+Shape: (A, R, S). Separate cfg_anch. Calibrated to p_idle≈0.005.
+
+Runner / step logic (vectorized S shots)
+
+Per round r: agent corrections → M0[:,r,:] (pre) → run pre → M1[:,r,:] (pre-meas) → run meas → obs = round-r DET slice.
+
+After R rounds: terminal reward (add OBSERVABLE_INCLUDE next).
+
+Diagnostics
+
+MR bits = raw ancilla measurements (often returned flattened (A*R, S)).
+
+DET bits = detector events (N_det, S) or (S, N_det).
+
+Timelike readout flip rate = XOR across consecutive rounds of MR.
+
+Detector event rate = mean of DET bits.
+
+Fixed “top-5 detector” indexing; added simple stats print.
+
+Sanity toggles verified:
+
+M0=off, M1=off → all zeros
+
+M0 only → spacelike detectors light up
+
+M1 only → timelike detectors light up
+
+Both → additive
+
+Gotchas fixed
+
+Removed accidental CORRELATED_ERROR insertion at MR.
+
+t3 currently disabled pending a working generator.
+
+Calibration polish
+
+If eval p̂ drifts, apply a single global post-scale to all p_start per channel; consider bigger batch for smoother convergence.
+
+Next up (M2 preview)
+
+Lock in OBSERVABLE_INCLUDE and terminal reward.
+
+Decide what M2 is (e.g., gate-level 2-qubit errors, cross-talk, or another correlated channel), define its injection timing, and mirror the same calibrate/metrics flow.
+
+
+
+apply agent corrections
+-> inject M0 (data pre-noise)
+-> run pre up to each CNOT, inject M2 for that gate
+-> finish pre
+-> inject M1 (ancillas pre-measurement)
+-> run meas
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+only injecting m2: 
+
+-------------------M2 stats---------------------------
+
+CX gates:[(2, 3), (16, 17), (11, 12), (15, 14), (10, 9), (19, 18), (2, 1), (16, 15), (11, 10), (8, 14), (3, 9), (12, 18), (16, 10), (11, 5), (25, 19), (8, 9), (17, 18), (12, 13), (16, 8), (11, 3), (25, 17), (1, 9), (10, 18), (5, 13)]
+ Datas: [1, 3, 5, 8, 10, 12, 15, 17, 19]
+ Anchillas: [2, 9, 11, 13, 14, 16, 18, 25]
+ Repeats: 9
+
+
+
+--- Calibrating M2 start rates ---
+[M2 cal] iter 0: empirical p_hat=0.001839 (target 0.003000)
+[M2 cal] iter 1: empirical p_hat=0.004639 (target 0.003000)
+[M2 cal] iter 2: empirical p_hat=0.002962 (target 0.003000)
+[M2 cal] done: within ±10% of target.
+
+
+Calibrated start_probs for M1 (batch: 256, iters: 25):
+0.00014938942752559068
+0.0005975577101023627
+M2 shape: (24, 10, 1024, 2)
+M_gates shape: (24, 10, 1024, 2)
+actives shape: (4, 1024)
+
+
+[M2] shape=(24, 10, 1024, 2)  nnz=1372  p̂=0.002791
+  shots S=1024: empty_fraction=0.664 (target ~ exp(-E*R*2*p))
+  counts: X=692, Z=680, Y=0
+  example[0]: gate=0, round=0, q=391, shot=0, code=1
+  example[1]: gate=0, round=0, q=391, shot=1, code=2
+  example[2]: gate=0, round=1, q=391, shot=0, code=1
+  example[3]: gate=0, round=1, q=391, shot=1, code=2
+  example[4]: gate=0, round=1, q=907, shot=0, code=2
+
+ ---------------------------end M2 ----------------------------------
+
+
+R0: 10, R1:10, R2:10
+ S: 1024, 1024, 1024
+
+Some STATS:
+Detector Flips: True
+Observations: []
+Measurement Flips: True
+  * detector flip rate: 0.012631
+  * shots with any detector flip: 162 / 1024
+  * detectors that fired at least once: 75 / 76
+  * measurement 1-rate: 0.013110
+
+M0 is of shape: (9, 10, 1024)
+M1 if of shape: (8, 10, 1024)
+M2 is of shape: (24, 10, 1024, 2) 
+(aaltoproj) misaila1@l25-0206:/u/71/misaila1/data/Desktop/Project/AaltoProject/surface_code$

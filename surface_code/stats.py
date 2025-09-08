@@ -104,3 +104,105 @@ def measure_stacked_mask_stats(M, label="M_data_local", show_examples=5):
         "counts": {"X": cntX, "Z": cntZ, "Y": cntY},
         "per_shot_counts": per_shot_counts,
     }
+
+
+
+
+
+
+
+
+
+
+
+def measure_m2_mask_stats(M, label="M2", show_examples=5):
+    """
+    Measure stats for a two-qubit gate error mask:
+      M shape: (E, R, 2, S) with codes {0=I,1=X,2=Z,3=Y}.
+    """
+    M = np.asarray(M)
+    if M.ndim != 4:
+        raise ValueError(f"Expected 4D M (E,R,2,S); got shape {M.shape}")
+
+    E, R, S, Q = M.shape
+    if Q != 2:
+        raise ValueError(f"Expected qubit axis of size 2; got {Q}")
+
+    nz = (M != 0)
+    nnz_total = int(nz.sum())
+    p_hat = nnz_total / (E * R * Q * S)
+
+    # per-shot counts of error sites across all gates/rounds/qubits
+    per_shot_counts = nz.reshape(E * R * Q, S).sum(axis=0)
+    frac_empty = float((per_shot_counts == 0).mean())
+
+    # per-round marginal: average over gates and the 2 qubits -> shape (R,)
+    per_round_mean = nz.mean(axis=(0, 2)).mean(axis=-1)  # eqv: nz.mean(axis=(0,2,3))
+    # per-gate marginal: average over rounds and the 2 qubits -> shape (E,)
+    per_gate_mean  = nz.mean(axis=(1, 2)).mean(axis=-1)  # eqv: nz.mean(axis=(1,2,3))
+    # per-qubit-in-pair marginal (q=0 vs q=1), averaged over gates, rounds, shots -> shape (2,)
+    per_pair_qubit_mean = nz.mean(axis=(0,1,3))          # average over E,R,S
+
+    # Pauli composition
+    cntX = int((M == 1).sum()); cntZ = int((M == 2).sum()); cntY = int((M == 3).sum())
+
+    print(f"\n\n[{label}] shape={M.shape}  nnz={nnz_total}  p̂={p_hat:.6f}")
+    print(f"  shots S={S}: empty_fraction={frac_empty:.3f} (target ~ exp(-E*R*2*p))")
+    print(f"  counts: X={cntX}, Z={cntZ}, Y={cntY}")
+
+    # quick examples
+    if show_examples > 0 and nnz_total > 0:
+        # indices: (e, r, q, s)
+        idx = np.argwhere(nz)
+        for i in range(min(show_examples, idx.shape[0])):
+            e, r, q, s = map(int, idx[i])
+            print(f"  example[{i}]: gate={e}, round={r}, q={q}, shot={s}, code={int(M[e, r, q, s])}")
+
+    return {
+        "shape": (E, R, Q, S),
+        "p_hat": p_hat,
+        "empty_fraction": frac_empty,
+        "per_round_mean": per_round_mean,          # (R,)
+        "per_gate_mean": per_gate_mean,            # (E,)
+        "per_pair_qubit_mean": per_pair_qubit_mean,# (2,)
+        "counts": {"X": cntX, "Z": cntZ, "Y": cntY},
+        "per_shot_counts": per_shot_counts,        # (S,)
+    }
+
+
+
+
+
+def m2_mask_stats(M2):
+    """
+    M2: (E,R,S,2) or (E,R,2) or (E,R,2,S). Reports both per-leg and per-site.
+    """
+    import numpy as np
+    M2 = np.asarray(M2)
+    if M2.ndim == 3:   # (E,R,2)
+        M2 = M2[:, :, None, :]   # -> (E,R,S=1,2)
+    if M2.ndim == 4 and M2.shape[2] == 2:
+        M2 = np.transpose(M2, (0,1,3,2))     # (E,R,S,2)
+
+    E,R,S,L = M2.shape
+    assert L == 2
+
+    nz_leg = (M2 != 0)
+    p_leg  = nz_leg.mean()                         # per-leg cell rate over (E,R,S,2)
+
+    # per-site: any leg non-I
+    nz_site = nz_leg.any(axis=-1)                  # (E,R,S)
+    p_site  = nz_site.mean()                       # average over shots too
+
+    # quick diagnostics
+    shots_with_any = (nz_site.sum(axis=(0,1)) > 0).sum()
+    sites_nonzero  = nz_site.sum(axis=2).mean()    # avg non-zero sites per (E,R)
+
+    return {
+        "shape": M2.shape,
+        "p_leg": float(p_leg),
+        "p_site": float(p_site),
+        "shots_with_any": int(shots_with_any),
+        "shots": S,
+        "avg_nonzero_sites_per_ER": float(sites_nonzero),
+    }
