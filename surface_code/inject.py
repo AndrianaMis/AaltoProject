@@ -1,6 +1,6 @@
 import numpy as np, stim
-from M0 import mask_generator
-from helpers import extract_round_template, build_circ_by_round_from_generated
+from .M0 import mask_generator
+from .helpers import extract_round_template, build_circ_by_round_from_generated
 
 # def run_batched_data_only(circuit, M_data, data_ids):
 #     circ_by_round, anc_ids = build_circ_by_round_from_generated(circuit)  # as in our wrapper
@@ -232,7 +232,7 @@ def run_batched_data_plus_anc(circuit, M_data, M_anc, data_ids, anc_ids, enable_
 
 def run_batched_data_anc_plus_m2(circuit, M_data, M_anc, M2, gate_pairs, data_ids, anc_ids, enable_M0: bool=True, enable_M1: bool= True, enable_M2:bool=True):
     # Build rounds
-    from helpers import build_circ_by_round_from_generated, extract_round_template
+    from .helpers import build_circ_by_round_from_generated, extract_round_template
     circ_by_round, anc_ids_auto = build_circ_by_round_from_generated(circuit)
     assert sorted(anc_ids) == sorted(anc_ids_auto)
     R = len(circ_by_round)
@@ -245,7 +245,7 @@ def run_batched_data_anc_plus_m2(circuit, M_data, M_anc, M2, gate_pairs, data_id
     D, R0, S  = M_data.shape
     A, R1, S1 = M_anc.shape
     E, R2, S2, _= M2.shape
-    print(f'R0: {R0}, R1:{ R1}, R2:{ R2}\n S: {S}, {S1 }, {S2}')
+  #  print(f'R0: {R0}, R1:{ R1}, R2:{ R2}\n S: {S}, {S1 }, {S2}')
     assert R0 == R1 == R2 == R and S == S1 == S2
 
     Q = max([0] + data_ids + anc_ids + [q for p in gate_pairs for q in p]) + 1

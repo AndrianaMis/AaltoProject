@@ -354,6 +354,24 @@ def _sample_pair_pauli(
 
 
 
+def summarize_M0_or_M1(M,name):  # M: (Q,R,S) with codes {0,1,2,3}
+    nz = (M != 0)
+    p_hat = nz.mean()
+    per_round = nz.mean(axis=(0,2))  # (R,)
+    per_qubit = nz.mean(axis=(1,2))  # (Q,)
+    per_shot_counts = nz.reshape(nz.shape[0]*nz.shape[1], nz.shape[2]).sum(axis=0)
+    fano = per_shot_counts.var() / max(1e-12, per_shot_counts.mean())
+    print(f"[{name}] p̂={p_hat:.6f}  empty_shots={(per_shot_counts==0).mean():.3f}  Fano={fano:.2f}")
+    print(f"[{name}] per-round mean (min/median/max): {per_round.min():.5f} / "
+          f"{np.median(per_round):.5f} / {per_round.max():.5f}")
+
+def summarize_M2(M2,name):  # M2: (E,R,S,2)
+    occ = (M2 != 0).any(axis=-1)     # (E,R,S)
+    p_site = occ.mean()              # per (gate,round,shot)
+    per_round = occ.mean(axis=(0,2)) # (R,)
+    print(f"[{name}] site p̂={p_site:.6f}")
+    print(f"[{name}] per-round mean (min/median/max): {per_round.min():.5f} / "
+          f"{np.median(per_round):.5f} / {per_round.max():.5f}")
 
 
 

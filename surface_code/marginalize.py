@@ -1,7 +1,7 @@
 
-from M0 import mask_generator
-from M1 import mask_generator_M1
-from M2 import mask_generator_M2
+from .M0 import mask_generator
+from .M1 import mask_generator_M1
+from .M2 import mask_generator_M2
 #------------------------------------- MARGINALIZATION ----------------------------------------------------------
 
 from typing import List, Tuple, Dict, Optional
@@ -270,16 +270,16 @@ cfg_anch = {
 
 
 cfg_m2 = {
-  "p_idle": 0.003,   # target marginal for M2; calibrate with your loop
+  "p_idle": 0.005,   # target marginal for M2; calibrate with your loop
   "pairs": {         # CZ-biased example
     "ZZ": 0.40, "IZ": 0.15, "ZI": 0.15,
     "XX": 0.10, "XZ": 0.08, "ZX": 0.08,
     "IX": 0.02, "XI": 0.02
     # omit Y* and *Y; II is implicitly forbidden
   },
-  "t1": {"enabled": True, "p_start": 2.0e-4, "G_min": 2, "G_max": 6, "pX": 0.5, "pZ": 0.5},
-  "t2": {"enabled": True, "p_start": 8.0e-4, "gamma": 0.8},
-  "t3": {"enabled": False, "p_start": 3.0e-4, "k_min": 2, "k_max": 5, "decay_model": "power", "decay_n": 2.0},
+  "t1": {"enabled":True, "p_start": 2.0e-4, "G_min": 2, "G_max": 6, "pX": 0.5, "pZ": 0.5},
+  "t2": {"enabled": True, "p_start": 9.0e-4, "gamma": 0.8},
+  "t3": {"enabled": True, "p_start": 3.0e-4, "k_min": 2, "k_max": 5, "decay_model": "power", "decay_n": 2.0},
   "t4": {"enabled": False, "p_start": 1.5e-4, "G_min": 2, "G_max": 6, "k_min": 2, "k_max": 5,
          "decay_model": "power", "decay_n": 2.0, "restrict_by_shared": "anc"}
 }

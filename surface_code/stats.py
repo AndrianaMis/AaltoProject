@@ -115,7 +115,7 @@ def measure_stacked_mask_stats(M, label="M_data_local", show_examples=5):
 
 
 
-def measure_m2_mask_stats(M, label="M2", show_examples=5):
+def measure_m2_mask_stats(M, label="M2", show_examples=10):
     """
     Measure stats for a two-qubit gate error mask:
       M shape: (E, R, 2, S) with codes {0=I,1=X,2=Z,3=Y}.
@@ -171,38 +171,64 @@ def measure_m2_mask_stats(M, label="M2", show_examples=5):
 
 
 
-
-
-def m2_mask_stats(M2):
-    """
-    M2: (E,R,S,2) or (E,R,2) or (E,R,2,S). Reports both per-leg and per-site.
-    """
-    import numpy as np
+def normalize_m2(M2):
+    """Return M2 with shape (E,R,S,2). Accepts (E,R,2), (E,R,S,2) or (E,R,2,S)."""
     M2 = np.asarray(M2)
-    if M2.ndim == 3:   # (E,R,2)
-        M2 = M2[:, :, None, :]   # -> (E,R,S=1,2)
-    if M2.ndim == 4 and M2.shape[2] == 2:
-        M2 = np.transpose(M2, (0,1,3,2))     # (E,R,S,2)
+    if M2.ndim == 3 and M2.shape[-1] == 2:                 # (E,R,2)
+        M2 = M2[:, :, None, :]                              # -> (E,R,1,2)
+    elif M2.ndim == 4 and M2.shape[2] == 2:                 # (E,R,2,S)
+        M2 = np.transpose(M2, (0, 1, 3, 2))                 # -> (E,R,S,2)
+    elif M2.ndim == 4 and M2.shape[3] == 2:                 # (E,R,S,2)
+        pass
+    else:
+        raise ValueError(f"Unexpected M2 shape {M2.shape}")
+    return M2.astype(np.int8, copy=False)
 
-    E,R,S,L = M2.shape
-    assert L == 2
 
-    nz_leg = (M2 != 0)
-    p_leg  = nz_leg.mean()                         # per-leg cell rate over (E,R,S,2)
+def m2_stats(M2):
+    """
+    Reports per-leg and per-site marginals from M2; also quick diagnostics.
+    - per-leg p̂_leg: mean( M2 != 0 ) over (E,R,S,legs)
+    - per-site p̂_site: mean( any_leg(M2 != 0) ) over (E,R,S)
+    """
+    M2 = normalize_m2(M2)                 # (E,R,S,2)
+    E, R, S, _ = M2.shape
 
-    # per-site: any leg non-I
-    nz_site = nz_leg.any(axis=-1)                  # (E,R,S)
-    p_site  = nz_site.mean()                       # average over shots too
+    nonzero_leg  = (M2 != 0)              # (E,R,S,2)
+    p_leg        = nonzero_leg.mean()
 
-    # quick diagnostics
-    shots_with_any = (nz_site.sum(axis=(0,1)) > 0).sum()
-    sites_nonzero  = nz_site.sum(axis=2).mean()    # avg non-zero sites per (E,R)
+    nonzero_site = nonzero_leg.any(-1)    # (E,R,S)
+    p_site       = nonzero_site.mean()
+
+    # Counts by code, aggregated over legs
+    counts = {
+        "X": int((M2 == 1).sum()),
+        "Z": int((M2 == 2).sum()),
+        "Y": int((M2 == 3).sum()),
+        "I": int((M2 == 0).sum()),
+    }
+
+    # shots with any event, and expected empty fraction from p_site
+    shots_with_any = int((nonzero_site.sum(axis=(0,1)) > 0).sum())
+    empty_frac     = float((nonzero_site.sum(axis=(0,1)) == 0).mean())
+    approx_empty   = float(np.exp(-E * R * p_site))  # crude independence approx over sites
+
+    # a couple of examples, if any
+    examples = []
+    idx = np.argwhere(M2 != 0)
+    for k in range(min(5, len(idx))):
+        e, r, s, leg = map(int, idx[k])
+        examples.append({"gate": e, "round": r, "shot": s, "leg": leg, "code": int(M2[e,r,s,leg])})
 
     return {
-        "shape": M2.shape,
+        "shape": (E, R, S, 2),
         "p_leg": float(p_leg),
         "p_site": float(p_site),
-        "shots_with_any": int(shots_with_any),
+        "nnz": int((M2 != 0).sum()),
+        "counts": counts,
         "shots": S,
-        "avg_nonzero_sites_per_ER": float(sites_nonzero),
+        "shots_with_any": shots_with_any,
+        "empty_fraction": empty_frac,
+        "empty_fraction≈exp(-E*R*p_site)": approx_empty,
+        "examples": examples,
     }

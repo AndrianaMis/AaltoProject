@@ -1,15 +1,17 @@
-from code_generator import build_planar_surface_code
-from visualize import plot_surface_code_lattice
-import stim
+from surface_code.code_generator import build_planar_surface_code
 import stim
 import numpy as np
-from M0 import mask_generator, mask_init
-from marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
-from stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_mask_stats
-from inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
-from helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs
-from M1 import mask_generator_M1
-from M2 import mask_generator_M2
+from surface_code.marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
+
+from surface_code.stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_stats
+from surface_code.inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
+from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs
+from surface_code.M1 import mask_generator_M1
+from surface_code.M2 import mask_generator_M2
+from visuals.corrs import make_Crr_heatmaps
+from surface_code.M0 import mask_generator, mask_init
+from visuals import corrs
+from .export import export_syndrome_dataset
 
 # Generate the rotated surface code circuit:
 distance = 3
@@ -73,7 +75,7 @@ iters_marg=25
 
 print(f'\n\n----------------------   DATA Stats  --------------------------------------------------\n')
 
-cfg_ = calibrate_start_rates(
+cfg_m0 = calibrate_start_rates(
     build_mask_once=build_m0_once,
     qubits=len(data_qus), 
     rounds=rounds, 
@@ -95,8 +97,8 @@ cfg_ = calibrate_start_rates(
 
 print(f"\n\nCalibrated start_probs for M0 (batch: {batch_marg}, iters: {iters_marg}):")
 for key in ("t1", "t2", "t3", "t4"):
-    if key in cfg_ and cfg_[key].get("enabled", False) and "p_start" in cfg_[key]:
-        print(cfg_[key]["p_start"])
+    if key in cfg_m0 and cfg_m0[key].get("enabled", False) and "p_start" in cfg_m0[key]:
+        print(cfg_m0[key]["p_start"])
 
 
 
@@ -105,7 +107,7 @@ cat_counts=[0, 0, 0, 0]
 
 for _ in range(1000):
     #use the calibrated cfg to generate masks
-    M_data, actives=mask_generator(qubits=len(data_qus), rounds=rounds, qubits_ind=data_qus, cfg=cfg_, actives_list=True)
+    M_data, actives=mask_generator(qubits=len(data_qus), rounds=rounds, qubits_ind=data_qus, cfg=cfg_m0, actives_list=True)
     measure_mask_stats(m=M_data, actives=actives)
     cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
 # print(f'\nFinal Mask M0:\n{M_data}')
@@ -127,7 +129,7 @@ res = [
         qubits=len(data_qus),
         rounds=rounds,
         qubits_ind=data_qus,   # you’re already generating data-only rows
-        cfg=cfg_,
+        cfg=cfg_m0,
         actives_list=True
     )
     for _ in range(S)
@@ -198,7 +200,7 @@ print(f'\n --------------------------- end data stats --------------------------
 
 print(f'\n\n----------------------   Anch Stats  --------------------------------------------------\n')
 
-cfg_a=calibrate_start_rates(
+cfg_m1=calibrate_start_rates(
     build_mask_once=build_m1_once,
     qubits=len(anchs), 
     rounds=rounds, 
@@ -216,8 +218,8 @@ cfg_a=calibrate_start_rates(
 
 print(f"\n\nCalibrated start_probs for M1 (batch: {batch_marg}, iters: {iters_marg}):")
 for key in ("t1", "t2", "t3", "t4"):
-    if key in cfg_a and cfg_a[key].get("enabled", False) and "p_start" in cfg_a[key]:
-        print(cfg_a[key]["p_start"])
+    if key in cfg_m1 and cfg_m1[key].get("enabled", False) and "p_start" in cfg_m1[key]:
+        print(cfg_m1[key]["p_start"])
 
 
 
@@ -226,13 +228,13 @@ cat_counts=[0, 0, 0, 0]
 
 for _ in range(1000):
     #use the calibrated cfg to generate masks
-    M_anch, actives=mask_generator_M1(qubits=len(anchs), rounds=rounds, qubits_ind=anchs, cfg=cfg_a, actives_list=True)
+    M_anch, actives=mask_generator_M1(qubits=len(anchs), rounds=rounds, qubits_ind=anchs, cfg=cfg_m1, actives_list=True)
     measure_mask_stats(m=M_anch,  actives=actives)
     cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
 print(f'Each category coutns: {cat_counts}')
 
 
-M_anch=mask_generator_M1(qubits=len(anchs), rounds=rounds, qubits_ind=anchs, cfg=cfg_a, actives_list=False)
+M_anch=mask_generator_M1(qubits=len(anchs), rounds=rounds, qubits_ind=anchs, cfg=cfg_m1, actives_list=False)
 
 
 
@@ -246,7 +248,7 @@ res = [
         qubits=len(anchs),
         rounds=rounds,
         qubits_ind=anchs,   # you’re already generating data-only rows
-        cfg=cfg_a,
+        cfg=cfg_m1,
         actives_list=True
     )
     for _ in range(S)
@@ -329,16 +331,16 @@ print(f'CX gates:{ cx}\n Datas: {datss}\n Anchillas: {anchs}\n Repeats: {repeate
 cfg_m2 = calibrate_start_rates_m2(
     build_mask_once=build_m2_once,
     cfg=cfg_m2,
-    p_idle_target=0.003,   # e.g., a bit smaller than M0/M1
+    p_idle_target=0.005,   # e.g., a bit smaller than M0/M1
     batch=batch_marg,
     iters=iters_marg,
-    tol=0.10,
+    tol=0.05,
     verbose=True,
     gates=cx,
     rounds=rounds
 )
 
-print(f"\n\nCalibrated start_probs for M1 (batch: {batch_marg}, iters: {iters_marg}):")
+print(f"\n\nCalibrated start_probs for M2 (batch: {batch_marg}, iters: {iters_marg}):")
 for key in ("t1", "t2", "t3", "t4"):
     if key in cfg_m2 and cfg_m2[key].get("enabled", False) and "p_start" in cfg_m2[key]:
         print(cfg_m2[key]["p_start"])
@@ -355,7 +357,6 @@ print(f'Each category coutns: {cat_counts}\n\n')
 
 E=len(cx)
 M2, actives=mask_generator_M2(gates=cx , rounds=rounds, cfg=cfg_m2, actives_list=True)
-print("[M2 stats]", m2_mask_stats(M2))
 
 #print(f'M2: \n{M2[:,:,1]}')
 
@@ -382,7 +383,7 @@ print("actives shape:", actives.shape)
 
 
 
-stats=measure_m2_mask_stats(M_2, label="M2")
+stats=measure_m2_mask_stats(M_2)
 p_idle = 0.005
 print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
 
@@ -391,7 +392,10 @@ print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
 cnt = stats["per_shot_counts"]            # from the meter we made
 print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
 
+print("== M2 sanity ==")
+stats_m2=m2_stats(M_2)
 
+print(m2_stats(M_2))
 
 
 
@@ -446,24 +450,55 @@ print(f"  * detectors that fired at least once: {dets_with_hits.sum()} / {dets_w
 print(f"  * measurement 1-rate: {meas.mean():.6f}")
 
 print(f'\nM0 is of shape: {M_data.shape}')
-
 print(f'M1 if of shape: {M_anch.shape}')
 print(f'M2 is of shape: {M_2.shape} ')
+print(f'Dets are of shpae: {dets.shape}')
+print(f'Meas are of shape: {meas.shape}')
 
 
 
+make_Crr_heatmaps(M0=M_data, M1=M_anch, M2=M_2, DET=dets, MR=meas, R=rounds, A=len(anchs))
+#make_corr_matrix_over_rounds(dets=dets, rounds=rounds)
+print(f'Dets: \n{dets[:,0]}')
+
+print(f'MRs:\n{meas[:,0]}')
+
+
+slices, det_counts = corrs.detector_round_slices(circuit)
+print("per-round DETECTOR counts:", det_counts, " total=", sum(det_counts))  # should equal dets.shape[0]
+
+X_det = corrs.per_round_counts_from_dets(dets, slices)  # (R,S)
+C_det = corrs.round_round_corr(X_det)
+corrs.plot_Crr_d(C_det, "C_rr — DET")
 
 
 
+corrs.plot_intraround_corr_heatmaps(dets, slices, max_rounds=6)
+
+export_syndrome_dataset(circuit=circuit,
+                        data_qubits=len(data_qus),
+                        anchilla_qubits=len(anchs),
+                        rounds=rounds,
+                        data_ids=data_qus,
+                        anc_ids=anchs,
+                        gate_pairs=cx,
+                        m0_build=build_m0_once,
+                        m1_build=build_m1_once,
+                        m2_build=build_m2_once,
+                        m0_cfg=cfg_m0,
+                        m1_cfg=cfg_m1,
+                        m2_cfg=cfg_m2,
+                        verbose=True)
 
 
-
-
-
-
-
-
-
+# export_dataset(circuit=circuit,
+#                M_data_local=M_data_local,
+#                M_anc_local=M_anch_local,
+#                M2_local=M_2,
+#                data_ids=data_qus,
+#                anc_ids=anchs,
+#                gate_pairs=cx,
+#                out_prefix='extracted')
 # # force Z on first data row in round 0 for first 16 shots
 # M_forced = M_data_local.copy()
 # M_forced[:] = 0
@@ -499,3 +534,5 @@ print(f'M2 is of shape: {M_2.shape} ')
 
 # dets = sim.get_detector_flips()
 # print("toy dets any?", dets.any())   # EXPECT: True
+
+
