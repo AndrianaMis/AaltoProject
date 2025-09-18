@@ -61,7 +61,7 @@ def export_syndrome_dataset(
     m0_cfg=None,
     m1_cfg=None,
     m2_cfg=None,
-    S_total=100_000,
+    S_total=10_000,
     batch=1024,
     rng_seed=123,
     out_path="data/syndrome.npz",
@@ -218,4 +218,6 @@ def export_syndrome_dataset(
             print("timelike flip rate per ancilla (XOR of consecutive rounds):")
             print(np.array2string(flips, precision=6, separator=", "))
 
+
+    return DET, MR, obs
 # --- END: syndrome export function ---

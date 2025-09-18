@@ -232,3 +232,68 @@ def m2_stats(M2):
         "empty_fraction≈exp(-E*R*p_site)": approx_empty,
         "examples": examples,
     }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+import numpy as np
+
+def analyze_decoding_stats(dets, obs, meas, M0, M1, M2, rounds, ancillas, circuit, slices):
+    print("\n=== Decoding Statistics ===")
+
+    print(f"Any detector flips: {np.any(dets)}")
+    print(f"Sample detector flips (first shot): {dets[:,0]}")
+    print(f"Sample observations (last step): {obs}")
+    print(f"Any measurement flips: {np.any(meas)}")
+
+    # Detector flip rate (fraction of flips over all detectors and shots)
+    det_rate = dets.mean()
+    print(f"Detector flip rate: {det_rate:.6f}")
+
+    # Shots with any detector flip
+    shots_have_flip = dets.any(axis=0)
+    print(f"Shots with >=1 detector flip: {shots_have_flip.sum()} / {shots_have_flip.size}")
+
+    # Detectors that fired at least once
+    dets_fired = dets.any(axis=1)
+    print(f"Detectors that fired >=1 time: {dets_fired.sum()} / {dets_fired.size}")
+
+    # Measurement flip rate as fraction of ones
+    meas_rate = meas.mean()
+    print(f"Measurement 1-rate: {meas_rate:.6f}")
+
+    print(f"\nMask shapes:")
+    print(f" M0 (data) shape: {M0.shape}")
+    print(f" M1 (ancilla) shape: {M1.shape}")
+    print(f" M2 (two-qubit) shape: {M2.shape}")
+
+    print(f"Dets shape: {dets.shape}")
+    print(f"Meas shape: {meas.shape}")
+
+    # Your plotting helper functions
+    from visuals import corrs  # Adjust import per your project
+
+    corrs.make_Crr_heatmaps(M0=M0, M1=M1, M2=M2, DET=dets, MR=meas, R=rounds, A=ancillas)
+
+    print(f"\nFirst shot detector flips:\n{dets[:,0]}")
+    print(f"First shot measurements:\n{meas[:,0]}")
+
+    # Analyze per-round detector counts and correlations:
+    slices = corrs.detector_round_slices_3(circuit)
+
+    X_det = corrs.per_round_counts_from_dets(dets, slices)  # (R,S)
+    C_det = corrs.round_round_corr(X_det)
+    corrs.plot_Crr_d(C_det, "C_rr — DET")
+
+    print("\n=== End of Stats ===\n")

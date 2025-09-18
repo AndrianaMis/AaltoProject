@@ -29,6 +29,94 @@ def print_svg(round: stim.Circuit, strr:str):
 
     print(f'\nSaved svg pic in {strr}.svg!\n')
 
+def extract_round_template_plus_suffix(circ: stim.Circuit):
+    """
+    Split circuit into:
+      prefix    : before the first REPEAT{...}
+      pre_round : inside the REPEAT body, ops before first MR/M
+      meas_round: inside the REPEAT body, from first MR/M to end-of-body (includes DETECTORs)
+      suffix    : after the REPEAT block
+      anc_ids   : ancilla indices parsed from that first MR/M line
+      repeat_count: repeat times of the REPEAT block
+    """
+    import stim
+
+    # Work with text for a simple, robust split.
+    lines = str(circ).splitlines()
+
+    # Find the first REPEAT line and the matching closing brace.
+    rep_start = None
+    body_start = None
+    body_end = None
+    repeat_count = None
+
+    # locate "REPEAT k {" line
+    for i, ln in enumerate(lines):
+        parts = ln.strip().split()
+        if parts[:1] == ["REPEAT"] and "{" in ln:
+            rep_start = i
+            # repeat count is the next token
+            repeat_count = int(parts[1])
+            # body starts after the line with "{"
+            body_start = i + 1
+            break
+
+    if rep_start is None:
+        # No REPEAT: treat whole as one "round", empty suffix
+        prefix_txt = ""
+        body_txt = "\n".join(lines)
+        suffix_txt = ""
+    else:
+        # find matching "}" for this REPEAT (track nesting)
+        depth = 0
+        for j in range(rep_start, len(lines)):
+            ln = lines[j]
+            depth += ln.count("{")
+            depth -= ln.count("}")
+            if depth == 0:
+                body_end = j  # line containing the closing "}"
+                break
+        if body_end is None:
+            raise ValueError("Unbalanced REPEAT braces in circuit text.")
+
+        prefix_txt = "\n".join(lines[:rep_start])
+        body_txt   = "\n".join(lines[body_start:body_end])  # inside braces
+        suffix_txt = "\n".join(lines[body_end+1:])          # after the REPEAT block
+
+    # Inside the body, split at the first ancilla measurement (MR or M)
+    body_lines = body_txt.splitlines()
+    meas_start = None
+    anc_ids = []
+
+    def parse_int(tok: str) -> int:
+        return int(tok[1:]) if tok.startswith("!")==True else int(tok)
+
+    for i, ln in enumerate(body_lines):
+        parts = ln.split()
+        if not parts:
+            continue
+        if parts[0] in ("MR", "M"):
+            meas_start = i
+            anc_ids = sorted(parse_int(t) for t in parts[1:])
+            break
+
+    if meas_start is None:
+        pre_txt  = "\n".join(body_lines)
+        meas_txt = ""
+    else:
+        pre_txt  = "\n".join(body_lines[:meas_start])
+        meas_txt = "\n".join(body_lines[meas_start:])
+
+    prefix    = stim.Circuit(prefix_txt) if prefix_txt.strip() else stim.Circuit()
+    pre_round = stim.Circuit(pre_txt)    if pre_txt.strip()    else stim.Circuit()
+    meas_round= stim.Circuit(meas_txt)   if meas_txt.strip()   else stim.Circuit()
+    suffix    = stim.Circuit(suffix_txt) if suffix_txt.strip() else stim.Circuit()
+
+    # When no REPEAT was found, set repeat_count=1 if it wasn’t parsed
+    if repeat_count is None:
+        repeat_count = 1
+
+    return prefix, pre_round, meas_round, suffix, anc_ids, repeat_count
 
  
     
@@ -388,3 +476,18 @@ def sample_geometric_len(rng: np.random.Generator, gamma: float, max_len: Option
     return L
 
 
+
+
+
+
+def split_DET_by_round(DET, round_slices):
+    DET_by_round = []
+    for (a, b) in round_slices:
+        DET_by_round.append(DET[a:b, :])
+    return DET_by_round  # [(n_r, S), ...]
+
+
+# For a given shot s, get the "syndrome sequence" of detector events:
+def get_syndrome_sequence_from_DET(DET_by_round, s):
+    """Return list length R; each item is (n_r,) uint8 for shot s."""
+    return [blk[:, s].astype(np.uint8) for blk in DET_by_round]

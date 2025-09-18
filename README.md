@@ -53,10 +53,19 @@ Check exactly to figure out what happening with FlipSim. Start M1 , at least the
 
 Inject M1 (ok), start prepping M2, which is gate errors and not qubit errors. 
 
-## 08/08/25: 
+## 08/09/25: 
 
 Inject M2 (OK), marginalize ok
 
-## 09/08/25: 
+## 09/09/25: 
 
 #3 and #4 categories of M2.
+
+
+
+## 18/09/25: 
+
+
+Noise injection, syndrome extraction and final details finished. Env class defined and designed. 
+(MISSING: SPAM (prefix-suffix) errors (easy)). 
+ML model start

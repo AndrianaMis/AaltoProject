@@ -155,8 +155,30 @@ def make_Crr_heatmaps(
 
 
 
+def detector_round_slices_3(circuit, mode="rl"):
+    # mode: "rl" -> only R body rounds (8 each)
+    #       "full" -> return (prefix_slice, body_slices, suffix_slice)
+    from surface_code.helpers import build_circ_by_round_from_generated, extract_round_template_plus_suffix
+    import numpy as np
 
+    circ_by_round, _ = build_circ_by_round_from_generated(circuit)
+    prefix, pre_round, meas_round, suffix, _,R = extract_round_template_plus_suffix(circuit)
 
+    n_prefix = sum(inst.name=="DETECTOR" for inst in prefix)      # expect 4
+    n_suffix = sum(inst.name=="DETECTOR" for inst in suffix)      # expect 4
+    body_counts = [sum(inst.name=="DETECTOR" for inst in meas) for _,_,meas in circ_by_round]
+    if body_counts and body_counts[0] == n_prefix:
+        body_counts = body_counts[1:]  # drop the pre-body meas-block
+    assert len(body_counts) == R and all(c==8 for c in body_counts)
+
+    offs = np.cumsum([0]+body_counts)          # [0,8,16,...,8R]
+    body_slices = [(int(n_prefix+offs[i]), int(n_prefix+offs[i+1])) for i in range(R)]
+    if mode == "rl":
+        return body_slices  # R slices, width 8, no prefix/suffix
+    else:
+        prefix_slice = (0, n_prefix)
+        suffix_slice = (n_prefix+8*R, n_prefix+8*R+n_suffix)
+        return prefix_slice, body_slices, suffix_slice
 
 
 def detector_round_slices(circuit):
@@ -164,9 +186,9 @@ def detector_round_slices(circuit):
     Return a list of (start, stop) row indices in dets for each round r,
     and the per-round DETECTOR counts.
     """
-    from surface_code.helpers import build_circ_by_round_from_generated
+    from surface_code.helpers import build_circ_by_round_from_generated, extract_round_template
     circ_by_round, _ = build_circ_by_round_from_generated(circuit)
-
+    
     counts = []
     for (pre, _, meas) in circ_by_round:
         c = 0
@@ -176,7 +198,16 @@ def detector_round_slices(circuit):
         counts.append(c)
 
     offs = np.cumsum([0] + counts)
-    slices = [(int(offs[i]), int(offs[i+1])) for i in range(len(counts))]
+    
+    base=0
+    prefix, _,_,_,_,=extract_round_template(circuit)
+    for inst in prefix:
+        if inst.name=="DETECTOR":
+            base+=1
+
+
+    print(f'Dtetectors of PREFIX (so base) is {base}')
+    slices = [(base+int(offs[i]), base+int(offs[i+1])) for i in range(len(counts))]
 
     return slices, counts
 

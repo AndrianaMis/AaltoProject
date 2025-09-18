@@ -110,7 +110,7 @@
   "rounds": 10,
   "data_count": 9,
   "ancilla_count": 8,
-  "shots": 100000,
+  "shots": 10000,
   "num_detectors": 76,
   "round_slices": null,
   "note": "syndrome export (vectorized, stacked masks)"
