@@ -286,8 +286,8 @@ def analyze_decoding_stats(dets, obs, meas, M0, M1, M2, rounds, ancillas, circui
 
     corrs.make_Crr_heatmaps(M0=M0, M1=M1, M2=M2, DET=dets, MR=meas, R=rounds, A=ancillas)
 
-    print(f"\nFirst shot detector flips:\n{dets[:,0]}")
-    print(f"First shot measurements:\n{meas[:,0]}")
+    print(f"\10th shot detector flips:\n{dets[:,10]}")
+    print(f"10th shot measurements:\n{meas[:,:,10]}")
 
     # Analyze per-round detector counts and correlations:
     slices = corrs.detector_round_slices_3(circuit)

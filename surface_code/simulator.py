@@ -471,7 +471,7 @@ prefix, pre_round, meas_round, suffix, _,_= extract_round_template_plus_suffix(c
 
 slices=corrs.detector_round_slices_3(circuit)
 print(f'slices: {slices}')
-from decoder.decoder_helpers import StimDecoderEnv
+from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot
 env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
 env.reset(M0_local=M_data_local, M1_local=M_anch_local, M2_local=M_2)
@@ -480,7 +480,7 @@ for r in range(env.R):  # not 'rounds'
     if done: break
 
 dets, meas,obs_final, reward = env.finish()
-print(f'Detectors: {dets.shape}\n{dets[:,0]}')
+print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
 print(f'OBSERVATIONS: {obs.shape}\n{obs}')
 print("prefix DETs =", env._cnt(env.prefix))   # expect 4
 print("suffix DETs =", env._cnt(env.suffix))   # expect 4
@@ -497,6 +497,20 @@ S_tot=10_000
 from surface_code.stats import analyze_decoding_stats
 
 analyze_decoding_stats(dets, obs_final, meas, M0=M_data_local, M1=M_anch_local, M2=M_2, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
+
+
+
+
+SxR8 = det_syndrome_tensor(dets, slices)  # (S, R, 8)
+print("Syndrome tensor:", SxR8.shape)     # (1024, 9, 8)
+
+
+
+seq0 = det_syndrome_sequence_for_shot(dets, slices, s=0)  # list of 9 arrays, each (8,)
+print(f'Sequence of shot 0: {len(seq0)}, {len(seq0[0])}')
+
+
+
 #print('\n\nCircuit:\ŋ')
 #print(circuit)
 #print(f'\n\n\tPREFIX:\n{prefix}\n\tPRE ROUND:\n{pre_round}\n\tMEAS ROUND:\n{meas_round}\n\tSUFFIX\n{suffix}')

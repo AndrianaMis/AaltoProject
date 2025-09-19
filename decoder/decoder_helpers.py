@@ -30,10 +30,10 @@ class StimDecoderEnv:
         self.sim = None
         self.S = None
         self.r = 0
-        counts_all = [sum(1 for inst in meas if getattr(inst, "name", None) == "DETECTOR")
+        self.counts_all = [sum(1 for inst in meas if getattr(inst, "name", None) == "DETECTOR")
                     for (_,_,meas) in self.circ_by_round]
-        self._body_offset = 1 if (counts_all and counts_all[0] == 4) else 0
-
+        self._body_offset = 1 if (self.counts_all and self.counts_all[0] == self._cnt(self.prefix)) else 0
+        print(f'Initalized DecoderEnv with:\n\t- {self.rounds} rounds\n\t- {self.R} body REPEATs\n\t- {self._cnt(self.prefix)} prefix detectors\n\t- {self._cnt(self.pre_round_t)} pre_round dets (should be 0)\n\t- {self._cnt(self.meas_round_t)} repeat body detectors\n\t- {self._cnt(self.suffix)} suffix detectors\n\t- {self.counts_all} all detectors')
 
     @staticmethod
     def _extract_round_template_with_suffix(circ: stim.Circuit):
@@ -218,3 +218,25 @@ class StimDecoderEnv:
 
         # Reset internal state? (your trainer typically creates a new env per episode or calls reset)
         return dets, MR, obs, reward
+
+
+
+
+
+def det_syndrome_tensor(dets, round_slices):
+    """
+    Returns a tensor of shape (S, R, 8), i.e. for each shot s: a [R x 8] array.
+    Uses body-only slices (skips prefix and suffix), which is what you want for RL.
+    """
+    # DET_by_round: list of length R, each (8, S)
+    DET_by_round = [dets[a:b, :] for (a, b) in round_slices]  # [(8,S), ...]
+    # Stack -> (R, 8, S), then transpose -> (S, R, 8)
+    return np.stack(DET_by_round, axis=0).transpose(2, 0, 1)
+
+
+def det_syndrome_sequence_for_shot(dets, round_slices, s):
+    """
+    Returns a Python list of length R; each item is a (8,) uint8 vector for shot s.
+    """
+    return [dets[a:b, s].astype(np.uint8) for (a, b) in round_slices]
+

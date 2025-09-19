@@ -165,19 +165,21 @@ def detector_round_slices_3(circuit, mode="rl"):
     prefix, pre_round, meas_round, suffix, _,R = extract_round_template_plus_suffix(circuit)
 
     n_prefix = sum(inst.name=="DETECTOR" for inst in prefix)      # expect 4
-    n_suffix = sum(inst.name=="DETECTOR" for inst in suffix)      # expect 4
+    n_suffix = sum(inst.name=="DETECTOR" for inst in suffix)      # expect 4 for d =3 
     body_counts = [sum(inst.name=="DETECTOR" for inst in meas) for _,_,meas in circ_by_round]
+    print(f'body_counts: {body_counts}')
     if body_counts and body_counts[0] == n_prefix:
         body_counts = body_counts[1:]  # drop the pre-body meas-block
-    assert len(body_counts) == R and all(c==8 for c in body_counts)
+    assert len(body_counts) == R and all(c==n_prefix*2 for c in body_counts)
 
     offs = np.cumsum([0]+body_counts)          # [0,8,16,...,8R]
     body_slices = [(int(n_prefix+offs[i]), int(n_prefix+offs[i+1])) for i in range(R)]
     if mode == "rl":
         return body_slices  # R slices, width 8, no prefix/suffix
     else:
+        offset=body_counts[1]
         prefix_slice = (0, n_prefix)
-        suffix_slice = (n_prefix+8*R, n_prefix+8*R+n_suffix)
+        suffix_slice = (n_prefix+offset*R, n_prefix+offset*R+n_suffix)
         return prefix_slice, body_slices, suffix_slice
 
 
