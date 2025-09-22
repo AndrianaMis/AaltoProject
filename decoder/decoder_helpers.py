@@ -29,6 +29,7 @@ class StimDecoderEnv:
         self.M0 = self.M1 = self.M2 = None
         self.sim = None
         self.S = None
+        self.body_detectors=self._cnt(self.meas_round_t)
         self.r = 0
         self.counts_all = [sum(1 for inst in meas if getattr(inst, "name", None) == "DETECTOR")
                     for (_,_,meas) in self.circ_by_round]
@@ -150,7 +151,7 @@ class StimDecoderEnv:
                 e_idx += 1
         assert e_idx == E, f"Round {r}: expected {E} 2Q pairs, saw {e_idx}"
 
-    def step(self, action_mask=None):
+    def step_inject(self, action_mask=None):
         """
         One round step:
           - apply agent corrections on data qubits (optional)
@@ -185,12 +186,13 @@ class StimDecoderEnv:
         done = (self.r == len(self.round_slices))  # suffix not run yet; we run it in finish()
         return obs_r, done
 
-    def finish(self):
+    def finish_measure(self):
         """
         Run suffix (once), compute terminal info:
           - final detectors appended inside suffix
           - observable flips available; return them for terminal reward calculation
         """
+        #This finction performs the final read-out of the data qubits of the circuit
         if len(self.suffix) > 0:
                         # right before sim.do(self.suffix):
             dets_before = self.sim.get_detector_flips().shape[0]
@@ -202,7 +204,7 @@ class StimDecoderEnv:
         dets = self.sim.get_detector_flips().astype(np.uint8)     # (N_det, S)
         obs  = self.sim.get_observable_flips().astype(np.uint8)   # (N_obs, S)
         meas = self.sim.get_measurement_flips().astype(np.uint8)  # (A*(R+1)+D, S)
-
+        print(f'observables: {obs.shape}')
         # Slice body ancilla MR only (exclude prefix A, suffix D)
         A = len(self.anc_ids); D = len(self.data_ids); R = self.R
         M_expected = A*(R+1) + D
@@ -239,4 +241,16 @@ def det_syndrome_sequence_for_shot(dets, round_slices, s):
     Returns a Python list of length R; each item is a (8,) uint8 vector for shot s.
     """
     return [dets[a:b, s].astype(np.uint8) for (a, b) in round_slices]
+
+
+
+
+
+
+
+
+
+
+
+
 

@@ -405,6 +405,7 @@ print('\n ---------------------------end M2 ----------------------------------\n
 
 from .helpers import extract_round_template_plus_suffix
 
+
 prefix, pre_round, meas_round, suffix, _,_= extract_round_template_plus_suffix(circuit)
 
 
@@ -472,27 +473,28 @@ prefix, pre_round, meas_round, suffix, _,_= extract_round_template_plus_suffix(c
 slices=corrs.detector_round_slices_3(circuit)
 print(f'slices: {slices}')
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot
+from decoder.KalMamba import MambaBackbone
+
+
 env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
 env.reset(M0_local=M_data_local, M1_local=M_anch_local, M2_local=M_2)
 for r in range(env.R):  # not 'rounds'
-    obs, done = env.step(None)
+    obs, done = env.step_inject(None)
     if done: break
 
-dets, meas,obs_final, reward = env.finish()
+dets, meas,obs_final, reward = env.finish_measure()
 print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
-print(f'OBSERVATIONS: {obs.shape}\n{obs}')
+print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')
 print("prefix DETs =", env._cnt(env.prefix))   # expect 4
 print("suffix DETs =", env._cnt(env.suffix))   # expect 4
-
-
 
 
 DET_by_round = split_DET_by_round(dets, slices)
 
 
 
-S_tot=10_000
+S_tot=10_000   #injection
 
 from surface_code.stats import analyze_decoding_stats
 
@@ -501,13 +503,44 @@ analyze_decoding_stats(dets, obs_final, meas, M0=M_data_local, M1=M_anch_local, 
 
 
 
-SxR8 = det_syndrome_tensor(dets, slices)  # (S, R, 8)
-print("Syndrome tensor:", SxR8.shape)     # (1024, 9, 8)
+SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
+print("Syndrome tensor:", SxRxD.shape)     # (1024, 9, 8)
 
 
 
 seq0 = det_syndrome_sequence_for_shot(dets, slices, s=0)  # list of 9 arrays, each (8,)
 print(f'Sequence of shot 0: {len(seq0)}, {len(seq0[0])}')
+
+
+shots_injection=1024
+logical_errors=[]
+print('\nEpisodes in which we had logical errors:')
+for s in range(1024):
+    if obs_final[:,s] == 1:
+        logical_errors.append(s)
+print(logical_errors)
+
+
+
+
+
+
+import torch
+syndrome=torch.from_numpy(SxRxD).float().cuda() 
+
+mam=MambaBackbone(d_in=env.body_detectors).cuda()
+assert syndrome.shape[2] == mam.in_proj.in_features == 8
+y=mam.forward(syndrome)
+print(y.shape)
+
+
+
+
+
+
+
+
+
 
 
 
