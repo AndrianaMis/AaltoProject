@@ -473,24 +473,23 @@ prefix, pre_round, meas_round, suffix, _,_= extract_round_template_plus_suffix(c
 slices=corrs.detector_round_slices_3(circuit)
 print(f'slices: {slices}')
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
-from decoder.KalMamba import MambaBackbone
+from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits
 
 
 env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
-env.reset(M0_local=M_data_local, M1_local=M_anch_local, M2_local=M_2)
-for r in range(env.R):  # not 'rounds'
-    obs, done = env.step_inject(None)
-    if done: break
+# env.reset(M0_local=M_data_local, M1_local=M_anch_local, M2_local=M_2)
+# for r in range(env.R):  # not 'rounds'
+#     obs, done = env.step_inject(None)
+#     if done: break
 
-dets, meas,obs_final, reward = env.finish_measure()
-print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
-print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')
-print("prefix DETs =", env._cnt(env.prefix))   # expect 4
-print("suffix DETs =", env._cnt(env.suffix))   # expect 4
+# dets, meas,obs_final, reward = env.finish_measure()
+# print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
+# print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')
+# print("prefix DETs =", env._cnt(env.prefix))   # expect 4
+# print("suffix DETs =", env._cnt(env.suffix))   # expect 4
 
 
-DET_by_round = split_DET_by_round(dets, slices)
 
 
 
@@ -503,14 +502,68 @@ from surface_code.stats import analyze_decoding_stats
 
 
 
+# SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
+# # print("Syndrome tensor:", SxRxD.shape)     # (1024, 9, 8)
+
+
+
+# seq0 = det_syndrome_sequence_for_shot(dets, slices, s=0)  # list of 9 arrays, each (8,)
+# # print(f'Sequence of shot 0: {len(seq0)}, {len(seq0[0])}')
+
+
+
+# mam=MambaBackbone(d_in=env.body_detectors).cuda()
+# assert syndrome.shape[2] == mam.in_proj.in_features == 8
+# y=mam.forward(syndrome)
+# print(y.shape)
+
+
+from decoder.KalMamba import DecoderAgent, RolloutBuffer
+import torch
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
+
+B = S  # shots in parallel
+obs = env.reset(M0_local=M_data_local, M1_local=M_anch, M2_local=M_2).astype('float32')   # (S, 8) zeros from your env
+agent.begin_episode(B)
+
+roll = RolloutBuffer(obs_dim=obs.shape)  # store per-step data
+mode="discrete"
+
+
+
+
+for t in range(1):   # R = 9
+    obs_t = torch.from_numpy(obs).cuda()           # (B, 8)
+    logits, V_t, h_t = agent.act(obs_t)
+    print(f'logits: {logits}')
+    a_t, logp_t = sample_from_logits(logits, mode=mode)       # your MultiDiscrete or Discrete policy
+    a_t_cpu = a_t.detach().cpu()
+    logp_t_cpu = logp_t.detach().cpu()
+    action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=len(data_qus), shots=B, classes_per_qubit=3)
+
+    obs_next, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
+    # r_step = compute_step_reward(obs_next)             # e.g., -λ * (#ones)
+    r_step=0
+   # roll.add(obs)
+    obs = obs_next
+
+# episode end
+dets, MR, obs_final, reward_terminal = env.finish_measure()
+roll[-1] = (*roll[-1][:-1], roll[-1][-1] + reward_terminal)  # add terminal bonus to last step reward
+
+
+DET_by_round = split_DET_by_round(dets, slices)
+
+
+print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
+print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')
+print("prefix DETs =", env._cnt(env.prefix))   # expect 4
+print("suffix DETs =", env._cnt(env.suffix))   # expect 4
+
+
 SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
-print("Syndrome tensor:", SxRxD.shape)     # (1024, 9, 8)
-
-
-
-seq0 = det_syndrome_sequence_for_shot(dets, slices, s=0)  # list of 9 arrays, each (8,)
-print(f'Sequence of shot 0: {len(seq0)}, {len(seq0[0])}')
-
 
 shots_injection=1024
 list_with_syndromes_per_round=[]
@@ -528,40 +581,6 @@ print(f'\nLogical error rate: {logical_error_rate(shots_injection, obs_final)}')
 
 import torch
 syndrome=torch.from_numpy(SxRxD).float().cuda() 
-
-# mam=MambaBackbone(d_in=env.body_detectors).cuda()
-# assert syndrome.shape[2] == mam.in_proj.in_features == 8
-# y=mam.forward(syndrome)
-# print(y.shape)
-
-
-from decoder.KalMamba import DecoderAgent
-
-agent=DecoderAgent(d_in=env.body_detectors, n_actions=3)
-B = S  # shots in parallel
-obs = env.reset(M0_local=M_data_local, M1_local=M_anch, M2_local=M_2).astype('float32')   # (S, 8) zeros from your env
-agent.begin_episode(B)
-
-roll = []  # store per-step data
-for t in range(1):   # R = 9
-    obs_t = torch.from_numpy(obs).cuda()           # (B, 8)
-    logits, V_t, h_t = agent.act(obs_t)
-    print(f'logits: {logits}')
-   # a_t, logp_t = sample_from_logits(logits)       # your MultiDiscrete or Discrete policy
-
-    # obs_next, done = env.step_inject( action_mask=action_to_masks(a_t) )  # returns (S, 8), bool
-    # r_step = compute_step_reward(obs_next)             # e.g., -λ * (#ones)
-
-    # roll.append((logits, V_t, a_t, logp_t, r_step))
-    # obs = obs_next
-
-# episode end
-dets, MR, obs_final, reward_terminal = env.finish()
-roll[-1] = (*roll[-1][:-1], roll[-1][-1] + reward_terminal)  # add terminal bonus to last step reward
-
-
-
-
 
 # compute advantages & update PPO
 

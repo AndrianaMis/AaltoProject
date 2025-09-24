@@ -29,6 +29,8 @@ class MambaBackbone(nn.Module):
 
     @torch.no_grad()
     def mamba_step(self, x_t, cache):          # x_t: (B, 1, d_in)
+        device = next(self.parameters()).device
+        x_t = x_t.to(device)
         h = self.in_proj(x_t)
         for ly, (conv_state, ssm_state) in zip(self.layers, cache):
             h, _, _ = ly.step(h, conv_state, ssm_state)    # (B, 1, d_model)
@@ -57,13 +59,22 @@ class DecoderAgent(nn.Module):
         self.heads    = PolicyValue(d_model, n_actions)
         self.cache = None
 
-    def begin_episode(self, B):
+    def begin_episode(self, B, device=None):
+        if device is None:
+            device = next(self.parameters()).device
         self.cache = self.backbone.allocate_cache(B)
+        cache=self.cache
+        moved = []
+        for conv_state, ssm_state in cache:
+            conv_state = conv_state.to(device)
+            ssm_state  = ssm_state.to(device)
+            moved.append((conv_state, ssm_state))
+        self.cache = moved
 
     @torch.no_grad()
     def act(self, obs_t):                 # obs_t: (B, d_in) float32 in [0,1]
         x = obs_t[:, None, :]             # -> (B, 1, d_in)                                 #(1024, rounds, detetctors)
-        h = self.backbone.step(x, self.cache).squeeze(1)  # (B, d_model)
+        h = self.backbone.mamba_step(x, self.cache).squeeze(1)  # (B, d_model)
         logits, value = self.heads(h)     # (B, A), (B,)
         # sample or argmax here depending on train/eval
         return logits, value, h
@@ -85,8 +96,7 @@ class RolloutBuffer:
     Stores a short on-policy rollout (your episodes are length 9).
     We store raw obs (so we can re-forward with grads), actions, logp, values, rewards.
     """
-    def __init__(self, max_steps: int, obs_dim: int, device: torch.device | str = "cuda"):
-        self.max_steps = max_steps
+    def __init__(self, obs_dim: int, device: torch.device | str = "cuda"):
         self.obs_dim = obs_dim
         self.device = torch.device(device)
         self.reset()
@@ -211,6 +221,67 @@ class RolloutBuffer:
     def T(self): return len(self.rewards)
     @property
     def B(self): return self.values[0].shape[0] if self.values else 0
+
+
+
+
+
+
+
+import numpy as np
+# --- Action → mask bridge -----------------------------------------------------
+def action_to_masks(
+    actions,
+    mode: str,
+    data_ids: np.ndarray | list,     # list of global qubit ids for data qubits
+    num_qubits: int,                 # total Q for FlipSimulator
+    shots: int,                      # S (batch size)
+    classes_per_qubit: int = 3      # 3 -> {I,X,Z}, 4 -> {I,X,Z,Y}
+):
+    """
+    Returns dict {'X': xmask, 'Z': zmask} with shape (Q, S) boolean arrays.
+    NOTE: We don't use Y directly; Y = X and Z bits set in same shot/qubit.
+    """
+    data_ids = np.asarray(list(map(int, data_ids)), dtype=int)
+    Q, S = int(num_qubits), int(shots)
+    xmask = np.zeros((Q, S), dtype=bool)
+    zmask = np.zeros((Q, S), dtype=bool)
+
+    if mode == "discrete":
+        # actions: (S,) integers in [0, 2*D]
+        a = actions.detach().to("cpu").numpy().astype(int)  # (S,)
+        D = len(data_ids)
+        for s in range(S):
+            ai = a[s]
+            if ai == 0:
+                continue  # do-nothing
+            idx = ai - 1
+            q_local = idx // 2
+            p = idx % 2     # 0->X, 1->Z
+            if 0 <= q_local < D:
+                q_global = data_ids[q_local]
+                if p == 0: xmask[q_global, s] = True
+                else:      zmask[q_global, s] = True
+
+    elif mode == "multidiscrete":
+        # actions: (S, D) with values in {0=I,1=X,2=Z,(3=Y optional)}
+        a = actions.detach().to("cpu").numpy().astype(int)  # (S,D)
+        S_, D = a.shape
+        assert S_ == S
+        for q_local in range(D):
+            q_global = data_ids[q_local]
+            vals = a[:, q_local]   # (S,)
+            if classes_per_qubit == 4:
+                xmask[q_global, :] |= (vals == 1) | (vals == 3)
+                zmask[q_global, :] |= (vals == 2) | (vals == 3)
+            else:
+                xmask[q_global, :] |= (vals == 1)
+                zmask[q_global, :] |= (vals == 2)
+    else:
+        raise ValueError("mode must be 'discrete' or 'multidiscrete'")
+
+    return {"X": xmask, "Z": zmask}
+
 
 
 
