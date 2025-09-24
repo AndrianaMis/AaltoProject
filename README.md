@@ -73,3 +73,13 @@ Inject M2 (OK), marginalize ok
 Noise injection, syndrome extraction and final details finished. Env class defined and designed. 
 (MISSING: SPAM (prefix-suffix) errors (easy)). 
 ML model start
+
+## 22/09/25:
+Downloaded mamba, started Kalmamba.py 
+
+
+## 24/09/25:
+
+Started PPO inegration (simple, with no Kalman filtering yet)
+Action space: 2xd+1 (simplest)
+

@@ -4,7 +4,7 @@ import numpy as np
 from surface_code.marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
 from surface_code.stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_stats
 from surface_code.inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
-from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs, split_DET_by_round, get_syndrome_sequence_from_DET
+from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs, split_DET_by_round, get_syndrome_sequence_from_DET, logical_error_rate
 from surface_code.M1 import mask_generator_M1
 from surface_code.M2 import mask_generator_M2
 from visuals.corrs import make_Crr_heatmaps
@@ -472,7 +472,7 @@ prefix, pre_round, meas_round, suffix, _,_= extract_round_template_plus_suffix(c
 
 slices=corrs.detector_round_slices_3(circuit)
 print(f'slices: {slices}')
-from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot
+from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
 from decoder.KalMamba import MambaBackbone
 
 
@@ -513,12 +513,13 @@ print(f'Sequence of shot 0: {len(seq0)}, {len(seq0[0])}')
 
 
 shots_injection=1024
-logical_errors=[]
-print('\nEpisodes in which we had logical errors:')
-for s in range(1024):
-    if obs_final[:,s] == 1:
-        logical_errors.append(s)
-print(logical_errors)
+list_with_syndromes_per_round=[]
+print('Syndrome for each round')
+for r in range(env.R):
+    dets_round=det_for_round(SxRxD, r)
+    list_with_syndromes_per_round.append(dets_round)
+    print(f'\tr={r} -> {dets_round}')
+print(f'\nLogical error rate: {logical_error_rate(shots_injection, obs_final)}')
 
 
 

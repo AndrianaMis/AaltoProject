@@ -491,3 +491,15 @@ def split_DET_by_round(DET, round_slices):
 def get_syndrome_sequence_from_DET(DET_by_round, s):
     """Return list length R; each item is (n_r,) uint8 for shot s."""
     return [blk[:, s].astype(np.uint8) for blk in DET_by_round]
+
+
+
+
+
+
+def logical_error_rate(shots:int, obs):
+    logical_errors=[]
+    for s in range(shots):
+        if obs[:,s] == 1:
+            logical_errors.append(s)
+    return float(len(logical_errors)/shots)

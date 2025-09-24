@@ -242,7 +242,8 @@ def det_syndrome_sequence_for_shot(dets, round_slices, s):
     """
     return [dets[a:b, s].astype(np.uint8) for (a, b) in round_slices]
 
-
+def det_for_round(SxRxD, round_slice):
+    return [SxRxD[:,round_slice, :]]
 
 
 
