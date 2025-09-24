@@ -498,7 +498,7 @@ S_tot=10_000   #injection
 
 from surface_code.stats import analyze_decoding_stats
 
-analyze_decoding_stats(dets, obs_final, meas, M0=M_data_local, M1=M_anch_local, M2=M_2, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
+# analyze_decoding_stats(dets, obs_final, meas, M0=M_data_local, M1=M_anch_local, M2=M_2, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
 
 
 
@@ -529,13 +529,41 @@ print(f'\nLogical error rate: {logical_error_rate(shots_injection, obs_final)}')
 import torch
 syndrome=torch.from_numpy(SxRxD).float().cuda() 
 
-mam=MambaBackbone(d_in=env.body_detectors).cuda()
-assert syndrome.shape[2] == mam.in_proj.in_features == 8
-y=mam.forward(syndrome)
-print(y.shape)
+# mam=MambaBackbone(d_in=env.body_detectors).cuda()
+# assert syndrome.shape[2] == mam.in_proj.in_features == 8
+# y=mam.forward(syndrome)
+# print(y.shape)
+
+
+from decoder.KalMamba import DecoderAgent
+
+agent=DecoderAgent(d_in=env.body_detectors, n_actions=3)
+B = S  # shots in parallel
+obs = env.reset(M0_local=M_data_local, M1_local=M_anch, M2_local=M_2).astype('float32')   # (S, 8) zeros from your env
+agent.begin_episode(B)
+
+roll = []  # store per-step data
+for t in range(1):   # R = 9
+    obs_t = torch.from_numpy(obs).cuda()           # (B, 8)
+    logits, V_t, h_t = agent.act(obs_t)
+    print(f'logits: {logits}')
+   # a_t, logp_t = sample_from_logits(logits)       # your MultiDiscrete or Discrete policy
+
+    # obs_next, done = env.step_inject( action_mask=action_to_masks(a_t) )  # returns (S, 8), bool
+    # r_step = compute_step_reward(obs_next)             # e.g., -λ * (#ones)
+
+    # roll.append((logits, V_t, a_t, logp_t, r_step))
+    # obs = obs_next
+
+# episode end
+dets, MR, obs_final, reward_terminal = env.finish()
+roll[-1] = (*roll[-1][:-1], roll[-1][-1] + reward_terminal)  # add terminal bonus to last step reward
 
 
 
+
+
+# compute advantages & update PPO
 
 
 

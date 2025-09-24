@@ -81,5 +81,8 @@ Downloaded mamba, started Kalmamba.py
 ## 24/09/25:
 
 Started PPO inegration (simple, with no Kalman filtering yet)
-Action space: 2xd+1 (simplest)
-
+### Action space: 2xd+1 (simplest)
+- Discrete -> logits: (B, A)
+    returns -> actions: (B,) ,   logp:   (B,) (log-prob of chosen action)
+- MultiDiscrete -> logits: (B, D, C) (per-qubit categorical)
+    loops over the D qubits, samples a Categorical for each -> actions: (B, D) (class per qubit)    , logp: (B,) sum of per-qubit log-probs (needed for PPO)
