@@ -72,12 +72,18 @@ class DecoderAgent(nn.Module):
         self.cache = moved
 
     @torch.no_grad()
-    def act(self, obs_t):                 # obs_t: (B, d_in) float32 in [0,1]
-        x = obs_t[:, None, :]             # -> (B, 1, d_in)                                 #(1024, rounds, detetctors)
-        h = self.backbone.mamba_step(x, self.cache).squeeze(1)  # (B, d_model)
+    def act(self, obs_t):                 # obs_t: (B, d_in), ideally float32 in [0,1]
+        x = obs_t[:, None, :]             # -> (B, 1, d_in)
+        device = next(self.backbone.parameters()).device
+        dtype = next(self.backbone.parameters()).dtype
+
+        x_t = x.to(device).to(dtype)
+        self.cache = [(conv_state.to(device), ssm_state.to(device)) for conv_state, ssm_state in self.cache]
+
+        h = self.backbone.mamba_step(x_t, self.cache).squeeze(1)  # (B, d_model)
         logits, value = self.heads(h)     # (B, A), (B,)
-        # sample or argmax here depending on train/eval
         return logits, value, h
+
 
   #  def sample_from_logits(logits):
 

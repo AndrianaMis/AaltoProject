@@ -86,3 +86,9 @@ Started PPO inegration (simple, with no Kalman filtering yet)
     returns -> actions: (B,) ,   logp:   (B,) (log-prob of chosen action)
 - MultiDiscrete -> logits: (B, D, C) (per-qubit categorical)
     loops over the D qubits, samples a Categorical for each -> actions: (B, D) (class per qubit)    , logp: (B,) sum of per-qubit log-probs (needed for PPO)
+
+
+## 25/09/25:
+
+Does the M0,M1,M2 (esp m0, m1) apply the paulis to the correct indexed qubits? Cuase the masks are len x R   (fixed)
+Fix the logic behind injection of errors and injection of corrections (2 separate functions)

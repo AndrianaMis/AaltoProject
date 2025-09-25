@@ -532,16 +532,17 @@ roll = RolloutBuffer(obs_dim=obs.shape)  # store per-step data
 mode="discrete"
 
 
-
-
-for t in range(1):   # R = 9
+all_qids = list(data_qus) + list(anchs)
+Q_total = max([0] + all_qids) + 1 
+print(f'\nALL QUBITS IDS\n{data_qus + anchs}')
+for t in range(env.R):   # R = 9
     obs_t = torch.from_numpy(obs).cuda()           # (B, 8)
     logits, V_t, h_t = agent.act(obs_t)
-    print(f'logits: {logits}')
     a_t, logp_t = sample_from_logits(logits, mode=mode)       # your MultiDiscrete or Discrete policy
     a_t_cpu = a_t.detach().cpu()
     logp_t_cpu = logp_t.detach().cpu()
-    action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=len(data_qus), shots=B, classes_per_qubit=3)
+ 
+    action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total, shots=B, classes_per_qubit=3)
 
     obs_next, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
     # r_step = compute_step_reward(obs_next)             # e.g., -λ * (#ones)
@@ -551,7 +552,23 @@ for t in range(1):   # R = 9
 
 # episode end
 dets, MR, obs_final, reward_terminal = env.finish_measure()
-roll[-1] = (*roll[-1][:-1], roll[-1][-1] + reward_terminal)  # add terminal bonus to last step reward
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#roll[-1] = (*roll[-1][:-1], roll[-1][-1] + reward_terminal)  # add terminal bonus to last step reward
 
 
 DET_by_round = split_DET_by_round(dets, slices)
@@ -567,11 +584,11 @@ SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
 
 shots_injection=1024
 list_with_syndromes_per_round=[]
-print('Syndrome for each round')
-for r in range(env.R):
-    dets_round=det_for_round(SxRxD, r)
-    list_with_syndromes_per_round.append(dets_round)
-    print(f'\tr={r} -> {dets_round}')
+# print('Syndrome for each round')
+# for r in range(env.R):
+#     dets_round=det_for_round(SxRxD, r)
+#     list_with_syndromes_per_round.append(dets_round)
+#     print(f'\tr={r} -> {dets_round}')
 print(f'\nLogical error rate: {logical_error_rate(shots_injection, obs_final)}')
 
 
