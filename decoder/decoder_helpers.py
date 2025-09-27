@@ -162,12 +162,27 @@ class StimDecoderEnv:
         if self.r >= len(self.round_slices):
             raise RuntimeError("Episode already finished. Call reset().")
 
-        # 0) agent corrections (optional), format: xmask/zmask of shape (Q,S) or (len(data_ids),S)
-        if action_mask is not None:
-            # adapt this to your action format; here we assume (Q,S) bool X/Z
-            xmask, zmask = action_mask.get('X'), action_mask.get('Z')
-            self._apply_paulis(xmask, None, zmask)
 
+        S = self.S
+        Q = self.sim.num_qubits
+
+        # 0) Agent corrections (optional), accept (Q,S) masks or (D,S) in data-qubit order
+        if action_mask is not None:
+            xmask = action_mask.get('X'); zmask = action_mask.get('Z')
+            if xmask is not None or zmask is not None:
+                def _expand(mask):
+                    if mask is None:
+                        return None
+                    mask = np.asarray(mask, dtype=bool)
+                    if mask.shape == (Q, S):
+                        return mask
+                    if mask.shape == (len(self.data_ids), S):
+                        full = np.zeros((Q, S), dtype=bool)
+                        full[self.data_ids, :] = mask
+                        return full
+                    raise ValueError(f"Bad mask shape {mask.shape}; expected (Q,S) or (D,S)")
+                xmask = _expand(xmask); zmask = _expand(zmask)
+                self
         # 1) round injections & execution
         pre, _, meas = self.circ_by_round[self._body_offset+self.r]
   #      if self.r==1: print(f'When r==0, pre is\n{pre} \n and meas is: \n{meas}')

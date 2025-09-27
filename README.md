@@ -91,4 +91,10 @@ Started PPO inegration (simple, with no Kalman filtering yet)
 ## 25/09/25:
 
 Does the M0,M1,M2 (esp m0, m1) apply the paulis to the correct indexed qubits? Cuase the masks are len x R   (fixed)
-Fix the logic behind injection of errors and injection of corrections (2 separate functions)
+Fix the logic behind injection of errors and injection of corrections (2 separate functions).
+
+## 27/09/25:
+
+Not 2 separate functions. Fixed step_inject in decoder_helpers, so that it injects the corrections (if needed), and then injects the noise and measures. 
+Fixed action mask stats, tensors, injection.
+! Step Reward shaping ! 

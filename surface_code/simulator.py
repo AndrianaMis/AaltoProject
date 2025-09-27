@@ -142,7 +142,7 @@ print("M_data shape:", M_data.shape)
 print("actives shape:", actives.shape)
 
 
-M_data_local=make_M_data_local_from_masks(masks=M_data, data_ids=data_qus, rounds=repeat_body_counts )
+M0_local=make_M_data_local_from_masks(masks=M_data, data_ids=data_qus, rounds=repeat_body_counts )
 # print(f'M local is of shape: {M_data_local.shape}')
 
 
@@ -167,7 +167,7 @@ M_data_local=make_M_data_local_from_masks(masks=M_data, data_ids=data_qus, round
 
 
 #print(f'Lets check ids:\nData: {data_qus}\nAnchillas: {anchs}')  #  (All ok!)
-stats = measure_stacked_mask_stats(M_data_local, "M_data_local")
+stats = measure_stacked_mask_stats(M0_local, "M_data_local")
 # sanity vs target p_idle:
 p_idle = 0.005
 print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
@@ -240,7 +240,6 @@ M_anch=mask_generator_M1(qubits=len(anchs), rounds=repeat_body_counts, qubits_in
 
 #---------------------------------  FlipSIm-------------------------------------------------
 
-S=1024
 res = [
     mask_generator_M1(
         qubits=len(anchs),
@@ -261,7 +260,7 @@ print("M_anch shape:", M_anch.shape)
 print("actives shape:", actives.shape)
 
 
-M_anch_local=make_M_anc_local_from_masks(masks=M_anch, anc_ids=anchs, rounds=repeat_body_counts )
+M1_local=make_M_anc_local_from_masks(masks=M_anch, anc_ids=anchs, rounds=repeat_body_counts )
 
 
 
@@ -285,7 +284,7 @@ print_svg(circuit, "circuit")
 
 
 #print(f'Lets check ids:\nData: {data_qus}\nAnchillas: {anchs}')  #  (All ok!)
-stats = measure_stacked_mask_stats(M_anch_local, "MANCH_local")
+stats = measure_stacked_mask_stats(M1_local, "MANCH_local")
 # sanity vs target p_idle:
 p_idle = 0.005
 print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
@@ -347,7 +346,7 @@ cat_counts=[0, 0, 0, 0]
 
 for _ in range(1000):
     #use the calibrated cfg to generate masks
-    M_2, actives=mask_generator_M2(gates=cx, rounds=repeat_body_counts,  cfg=cfg_m2, actives_list=True)
+    M2, actives=mask_generator_M2(gates=cx, rounds=repeat_body_counts,  cfg=cfg_m2, actives_list=True)
     cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
 print(f'Each category coutns: {cat_counts}\n\n')
 
@@ -358,7 +357,6 @@ M2, actives=mask_generator_M2(gates=cx , rounds=repeat_body_counts, cfg=cfg_m2, 
 
 #print(f'M2: \n{M2[:,:,1]}')
 
-S=1024
 res = [
     mask_generator_M2(
         gates=cx,
@@ -371,17 +369,17 @@ res = [
 
 
 Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
-M_2 = np.stack(Ms, axis=-2).astype(np.int8)    # -> (E,R,S,2)
-print("M2 shape:", M_2.shape)
+M2_local = np.stack(Ms, axis=-2).astype(np.int8)    # -> (E,R,S,2)
+print("M2 shape:", M2_local.shape)
 actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
 
 
-print("M_gates shape:", M_2.shape)
+print("M_gates shape:", M2_local.shape)
 print("actives shape:", actives.shape)
 
 
 
-stats=measure_m2_mask_stats(M_2)
+stats=measure_m2_mask_stats(M2_local)
 p_idle = 0.005
 print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
 
@@ -391,9 +389,9 @@ cnt = stats["per_shot_counts"]            # from the meter we made
 print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
 
 print("== M2 sanity ==")
-stats_m2=m2_stats(M_2)
+stats_m2=m2_stats(M2_local)
 
-print(m2_stats(M_2))
+print(m2_stats(M2_local))
 
 
 
@@ -403,7 +401,7 @@ print('\n ---------------------------end M2 ----------------------------------\n
 
 
 
-from .helpers import extract_round_template_plus_suffix
+from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything
 
 
 prefix, pre_round, meas_round, suffix, _,_= extract_round_template_plus_suffix(circuit)
@@ -524,34 +522,60 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
 
-B = S  # shots in parallel
-obs = env.reset(M0_local=M_data_local, M1_local=M_anch, M2_local=M_2).astype('float32')   # (S, 8) zeros from your env
-agent.begin_episode(B)
 
-roll = RolloutBuffer(obs_dim=obs.shape)  # store per-step data
+all_qids = list(data_qus) + list(anchs)
+Q_total = max([0] + all_qids)
+B = S  # shots in parallel
 mode="discrete"
 
 
-all_qids = list(data_qus) + list(anchs)
-Q_total = max([0] + all_qids) + 1 
-print(f'\nALL QUBITS IDS\n{data_qus + anchs}')
+
+# --- episode init ---
+obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
+obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
+agent.begin_episode(B, device=device)
+buf = RolloutBuffer(obs_dim=obs.shape[1])  # store per-step data
+buf.reset()
+
+print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
+stats_act = {"X": 0, "Z": 0}
+
 for t in range(env.R):   # R = 9
-    obs_t = torch.from_numpy(obs).cuda()           # (B, 8)
-    logits, V_t, h_t = agent.act(obs_t)
+
+#chooose action from agent
+    logits, V_t, h_t = agent.act(obs)         
     a_t, logp_t = sample_from_logits(logits, mode=mode)       # your MultiDiscrete or Discrete policy
     a_t_cpu = a_t.detach().cpu()
     logp_t_cpu = logp_t.detach().cpu()
- 
-    action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total, shots=B, classes_per_qubit=3)
+ #make action mask ready for injecton with flipsim
+    action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)
+    # x_mask=action_mask.get('X')
+    # z_mask=action_mask.get('Z')
 
-    obs_next, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
+    # print(f'Action mask shapes:\n\tX: {x_mask.shape}\n\tZ:{z_mask.shape}')
+    #check whether these masks have anythign in them:
+    did_act, nx, nz = does_action_mask_have_anything(action_mask)
+    if did_act:
+        print(f"Agent proposed {nx} Xs and {nz} Zs in this step")
+
+    stats_act["X"] += int(action_mask["X"].sum())
+    stats_act["Z"] += int(action_mask["Z"].sum())
+
+
+
+
+                            #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
+                            #perfect corretions (making the syndrome be all zeros), could potentially be overshadowed by the noise injecyion after, cause we measure after the mask injections,
+                            #but that's normal 
+    obs_next_np, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
     # r_step = compute_step_reward(obs_next)             # e.g., -λ * (#ones)
     r_step=0
    # roll.add(obs)
-    obs = obs_next
-
+    obs = torch.from_numpy(obs_next_np).float().to(device)
 # episode end
 dets, MR, obs_final, reward_terminal = env.finish_measure()
+print("Episode corrections:", stats_act)
+
 
 
 
@@ -582,14 +606,13 @@ print("suffix DETs =", env._cnt(env.suffix))   # expect 4
 
 SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
 
-shots_injection=1024
 list_with_syndromes_per_round=[]
 # print('Syndrome for each round')
 # for r in range(env.R):
 #     dets_round=det_for_round(SxRxD, r)
 #     list_with_syndromes_per_round.append(dets_round)
 #     print(f'\tr={r} -> {dets_round}')
-print(f'\nLogical error rate: {logical_error_rate(shots_injection, obs_final)}')
+print(f'\nLogical error rate: {logical_error_rate(S, obs_final)}')
 
 
 

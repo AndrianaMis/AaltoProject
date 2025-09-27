@@ -322,6 +322,12 @@ def make_M_data_local_from_masks(
 
 
 
+def does_action_mask_have_anything(action_mask):
+    xmask, zmask = action_mask.get('X'), action_mask.get('Z')
+    x_count = int(xmask.sum()) if xmask is not None else 0
+    z_count = int(zmask.sum()) if zmask is not None else 0
+    total = x_count + z_count
+    return total > 0, x_count, z_count
 
 
 
