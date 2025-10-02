@@ -98,3 +98,7 @@ Fix the logic behind injection of errors and injection of corrections (2 separat
 Not 2 separate functions. Fixed step_inject in decoder_helpers, so that it injects the corrections (if needed), and then injects the noise and measures. 
 Fixed action mask stats, tensors, injection.
 ! Step Reward shaping ! 
+
+## 02/10/25:
+
+Developed the step_reward and finla_reward fucntions (the first one is per-round and the second is per episode).

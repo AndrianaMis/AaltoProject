@@ -2,7 +2,7 @@ from surface_code.code_generator import build_planar_surface_code
 import stim
 import numpy as np
 from surface_code.marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
-from surface_code.stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_stats
+from surface_code.stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_stats, summarize_episode
 from surface_code.inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
 from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs, split_DET_by_round, get_syndrome_sequence_from_DET, logical_error_rate
 from surface_code.M1 import mask_generator_M1
@@ -11,6 +11,16 @@ from visuals.corrs import make_Crr_heatmaps
 from surface_code.M0 import mask_generator, mask_init
 from visuals import corrs
 from .export import export_syndrome_dataset
+from surface_code.stats import analyze_decoding_stats
+from decoder.KalMamba import DecoderAgent, RolloutBuffer
+from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything
+import torch
+from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
+from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits
+from decoder.reward_functions import step_reward, final_reward
+
+
+
 
 # Generate the rotated surface code circuit:
 distance = 3
@@ -401,7 +411,6 @@ print('\n ---------------------------end M2 ----------------------------------\n
 
 
 
-from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything
 
 
 prefix, pre_round, meas_round, suffix, _,_= extract_round_template_plus_suffix(circuit)
@@ -470,8 +479,7 @@ prefix, pre_round, meas_round, suffix, _,_= extract_round_template_plus_suffix(c
 
 slices=corrs.detector_round_slices_3(circuit)
 print(f'slices: {slices}')
-from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
-from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits
+
 
 
 env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
@@ -493,31 +501,7 @@ env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
 S_tot=10_000   #injection
 
-from surface_code.stats import analyze_decoding_stats
 
-# analyze_decoding_stats(dets, obs_final, meas, M0=M_data_local, M1=M_anch_local, M2=M_2, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
-
-
-
-
-# SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
-# # print("Syndrome tensor:", SxRxD.shape)     # (1024, 9, 8)
-
-
-
-# seq0 = det_syndrome_sequence_for_shot(dets, slices, s=0)  # list of 9 arrays, each (8,)
-# # print(f'Sequence of shot 0: {len(seq0)}, {len(seq0[0])}')
-
-
-
-# mam=MambaBackbone(d_in=env.body_detectors).cuda()
-# assert syndrome.shape[2] == mam.in_proj.in_features == 8
-# y=mam.forward(syndrome)
-# print(y.shape)
-
-
-from decoder.KalMamba import DecoderAgent, RolloutBuffer
-import torch
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
@@ -528,53 +512,80 @@ Q_total = max([0] + all_qids)
 B = S  # shots in parallel
 mode="discrete"
 
+episodes=1
+for ep in range(episodes):
+        
+    # --- episode init ---
+    obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
+    obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
+    agent.begin_episode(B, device=device)
+    buf = RolloutBuffer(obs_dim=obs.shape[1])  # store per-step data
+    buf.reset()
 
-
-# --- episode init ---
-obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
-obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
-agent.begin_episode(B, device=device)
-buf = RolloutBuffer(obs_dim=obs.shape[1])  # store per-step data
-buf.reset()
-
-print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
-stats_act = {"X": 0, "Z": 0}
-
-for t in range(env.R):   # R = 9
-
-#chooose action from agent
-    logits, V_t, h_t = agent.act(obs)         
-    a_t, logp_t = sample_from_logits(logits, mode=mode)       # your MultiDiscrete or Discrete policy
-    a_t_cpu = a_t.detach().cpu()
-    logp_t_cpu = logp_t.detach().cpu()
- #make action mask ready for injecton with flipsim
-    action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)
-    # x_mask=action_mask.get('X')
-    # z_mask=action_mask.get('Z')
-
-    # print(f'Action mask shapes:\n\tX: {x_mask.shape}\n\tZ:{z_mask.shape}')
-    #check whether these masks have anythign in them:
-    did_act, nx, nz = does_action_mask_have_anything(action_mask)
-    if did_act:
-        print(f"Agent proposed {nx} Xs and {nz} Zs in this step")
-
-    stats_act["X"] += int(action_mask["X"].sum())
-    stats_act["Z"] += int(action_mask["Z"].sum())
+    print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
+    stats_act = {"X": 0, "Z": 0}
 
 
 
 
-                            #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
-                            #perfect corretions (making the syndrome be all zeros), could potentially be overshadowed by the noise injecyion after, cause we measure after the mask injections,
-                            #but that's normal 
-    obs_next_np, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
-    # r_step = compute_step_reward(obs_next)             # e.g., -λ * (#ones)
-    r_step=0
-   # roll.add(obs)
-    obs = torch.from_numpy(obs_next_np).float().to(device)
-# episode end
-dets, MR, obs_final, reward_terminal = env.finish_measure()
-print("Episode corrections:", stats_act)
+    all_action_masks=[]
+    obs_next_np=None
+    for t in range(env.R):   # R = 9
+
+    #chooose action from agent
+        logits, V_t, h_t = agent.act(obs)         
+        a_t, logp_t = sample_from_logits(logits, mode=mode)       # your MultiDiscrete or Discrete policy
+        a_t_cpu = a_t.detach().cpu()
+        logp_t_cpu = logp_t.detach().cpu()
+
+
+    #make action mask ready for injecton with flipsim
+        action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)
+
+        # x_mask=action_mask.get('X')
+        # z_mask=action_mask.get('Z')
+        # print(f'Action mask shapes:\n\tX: {x_mask.shape}\n\tZ:{z_mask.shape}')
+
+
+        #check whether these masks have anythign in them:
+        did_act, nx, nz = does_action_mask_have_anything(action_mask)
+        # if did_act:
+        #     print(f"Agent proposed {nx} Xs and {nz} Zs in this step")
+
+        stats_act["X"] += int(action_mask["X"].sum())
+        stats_act["Z"] += int(action_mask["Z"].sum())
+
+
+
+
+    #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
+    #perfect corretions (making the syndrome be all zeros), could potentially be overshadowed by the noise injecyion after, cause we measure after the mask injections,
+    #but that's normal 
+        obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
+        r_step=step_reward(obs_prev_round=obs_next_np, obs_round=obs_current)
+    #   print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
+        obs_next_np=obs_current
+        
+        pos_frac = (r_step > 0).mean()   # fraction of shots with positive reward
+        neg_frac = (r_step < 0).mean()   # fraction negative
+
+
+        obs = torch.from_numpy(obs_next_np).float().to(device)
+        all_action_masks.append(action_mask)
+
+    # episode end
+    dets, MR, obs_final, reward_terminal = env.finish_measure()
+    print("Episode corrections:", stats_act)
+    print(f'Reward: {final_reward(obs_flips=obs_final)}')
+
+
+
+
+#analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
+
+
+
+    summarize_episode(all_action_masks=all_action_masks, observables=obs_final)
 
 
 
@@ -587,21 +598,15 @@ print("Episode corrections:", stats_act)
 
 
 
-
-
-
-
-
-#roll[-1] = (*roll[-1][:-1], roll[-1][-1] + reward_terminal)  # add terminal bonus to last step reward
 
 
 DET_by_round = split_DET_by_round(dets, slices)
 
 
-print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
-print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')
-print("prefix DETs =", env._cnt(env.prefix))   # expect 4
-print("suffix DETs =", env._cnt(env.suffix))   # expect 4
+# print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
+# print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')
+# print("prefix DETs =", env._cnt(env.prefix))   # expect 4
+# print("suffix DETs =", env._cnt(env.suffix))   # expect 4
 
 
 SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
@@ -619,7 +624,6 @@ print(f'\nLogical error rate: {logical_error_rate(S, obs_final)}')
 
 
 
-import torch
 syndrome=torch.from_numpy(SxRxD).float().cuda() 
 
 # compute advantages & update PPO
@@ -632,31 +636,8 @@ syndrome=torch.from_numpy(SxRxD).float().cuda()
 
 
 
-#print('\n\nCircuit:\ŋ')
-#print(circuit)
-#print(f'\n\n\tPREFIX:\n{prefix}\n\tPRE ROUND:\n{pre_round}\n\tMEAS ROUND:\n{meas_round}\n\tSUFFIX\n{suffix}')
-#
 
 
-
-
-
-# 
-# 
-# 
-# for s in range(S_tot):
-#     syndrome=get_syndrome_sequence_from_DET(DET_by_round=DET_by_round, s=s)
-#     print(f'Shot: {s}')
-#     for r in range(rounds):S
-#         print(f'\tRound: {r}  ->  observation:{syndrome[r]}')
-
-
-# def _count_dets_in_snippet(snippet_str: str) -> int:
-#     return sum(1 for line in snippet_str.splitlines() if line.strip().startswith("DETECTOR"))
-# print("[exec] prefix DETs +=", _count_dets_in_snippet(prefix))
-# print("[exec] pre_round DETs +=", _count_dets_in_snippet(pre_round))   # should be 0
-# print("[exec] meas_round DETs +=", _count_dets_in_snippet(meas_round)) # should be 8
-# print("[exec] suffix DETs +=", _count_dets_in_snippet(suffix))         # should be 4
 
 
 
@@ -679,30 +660,5 @@ syndrome=torch.from_numpy(SxRxD).float().cuda()
 # print("detectors triggered by forced Z (subset):", who[:20])
 
 
-
-
-# Toy: ancilla a=0, data d=1. Measure an X-check on data via H-CNOT-H then MR(a).
-# toy = stim.Circuit("""
-# H 0
-# CX 0 1
-# H 0
-# MR 0
-# DETECTOR rec[-1]
-# """)
-
-# S = 16
-# sim = stim.FlipSimulator(batch_size=S, num_qubits=2, disable_stabilizer_randomization=True)
-
-# # Inject a Z on data (q=1) BEFORE the round
-# xmask = np.zeros((2, S), np.bool_)
-# ymask = np.zeros((2, S), np.bool_)
-# zmask = np.zeros((2, S), np.bool_)
-# zmask[1, :] = True
-
-# sim.broadcast_pauli_errors(pauli='Z', mask=zmask)  # always apply
-# sim.do(toy)
-
-# dets = sim.get_detector_flips()
-# print("toy dets any?", dets.any())   # EXPECT: True
 
 

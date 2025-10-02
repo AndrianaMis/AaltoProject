@@ -237,12 +237,37 @@ def m2_stats(M2):
 
 
 
+def summarize_episode(all_action_masks, observables):
+    """
+    all_action_masks : list of dicts [{'X':xmask, 'Z':zmask}, ...] per round
+                       each mask has shape (Q_total, S)
+    observables      : np.ndarray (1, S) from env.finish_measure()
+
+    Prints a compact summary of corrections and logical errors.
+    """
+    # Sum over all rounds
+    x_total = sum(mask['X'].sum() for mask in all_action_masks)
+    z_total = sum(mask['Z'].sum() for mask in all_action_masks)
+    n_rounds = len(all_action_masks)
+
+    # Shots count (S)
+    S = observables.shape[1]
+
+    # Per-shot averages
+    x_per_shot = x_total / S
+    z_per_shot = z_total / S
+
+    # Logical error rate
+    logical_errors = observables.sum()
+    logical_rate = logical_errors / S
 
 
-
-
-
-
+    print("\n\n====== Episode summary ======")
+    print(f"Rounds: {n_rounds}, Shots: {S}")
+    print(f"Mean corrections per shot: X={x_per_shot:.2f}, Z={z_per_shot:.2f}")
+    print(f"Total corrections applied: X={x_total}, Z={z_total}")
+    print(f"Logical error rate: {logical_rate:.3%} ({int(logical_errors)}/{S})")
+    print("=============================\n")
 
 
 
