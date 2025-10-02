@@ -149,7 +149,7 @@ def make_Crr_heatmaps(
 
     plt.tight_layout()
    # plt.show()
-    plt.savefig('Temporal_Heatmaps')
+    plt.savefig('visuals/graphs/Temporal_Heatmaps.png')
 
 
 
@@ -242,7 +242,7 @@ def plot_Crr_d(C, title):
     plt.title(title); plt.xlabel("round t'"); plt.ylabel("round t")
     cb = plt.colorbar(im, fraction=0.046, pad=0.04)
     cb.set_label("corr across shots")
-    plt.tight_layout(); plt.savefig('Detector_Temporal_Corrs_tt')
+    plt.tight_layout(); plt.savefig('visuals/graphs/Detector_Temporal_Corrs_tt')
 
 
 
@@ -268,6 +268,6 @@ def plot_intraround_corr_heatmaps(dets, slices, max_rounds=6):
         plt.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
     for j in range(k, len(axes)):
         axes[j].axis('off')
-    plt.tight_layout(); plt.savefig('Spatial_Det_Correlations')
+    plt.tight_layout(); plt.savefig('visuals/graphs/Spatial_Det_Correlations')
 
    

@@ -18,7 +18,7 @@ import torch
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
 from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits
 from decoder.reward_functions import step_reward, final_reward
-
+from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends
 
 
 
@@ -511,8 +511,10 @@ all_qids = list(data_qus) + list(anchs)
 Q_total = max([0] + all_qids)
 B = S  # shots in parallel
 mode="discrete"
-
+lers=[]
 episodes=1
+pos_frac=[]
+neg_frac=[]
 for ep in range(episodes):
         
     # --- episode init ---
@@ -526,7 +528,8 @@ for ep in range(episodes):
     stats_act = {"X": 0, "Z": 0}
 
 
-
+    pos_frac_ep=[]
+    neg_frac_ep=[]
 
     all_action_masks=[]
     obs_next_np=None
@@ -566,9 +569,8 @@ for ep in range(episodes):
     #   print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
         obs_next_np=obs_current
         
-        pos_frac = (r_step > 0).mean()   # fraction of shots with positive reward
-        neg_frac = (r_step < 0).mean()   # fraction negative
-
+        pos_frac_ep.append((r_step > 0).mean())
+        neg_frac_ep.append((r_step < 0).mean())
 
         obs = torch.from_numpy(obs_next_np).float().to(device)
         all_action_masks.append(action_mask)
@@ -579,9 +581,14 @@ for ep in range(episodes):
     print(f'Reward: {final_reward(obs_flips=obs_final)}')
 
 
+    ler=logical_error_rate(S, obs_final)
+    lers.append(ler)
+
+    # take mean across rounds in this episode
+    pos_frac.append(np.mean(pos_frac_ep))
+    neg_frac.append(np.mean(neg_frac_ep))
 
 
-#analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
 
 
 
@@ -590,7 +597,9 @@ for ep in range(episodes):
 
 
 
-
+analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
+plot_LERvsSTEPS(lers)
+plot_step_reward_trends(pos_frac, neg_frac)
 
 
 
