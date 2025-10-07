@@ -103,3 +103,7 @@ Fixed action mask stats, tensors, injection.
 
 Developed the step_reward and finla_reward fucntions (the first one is per-round and the second is per episode).
 Added some visualizations in plots.py
+
+## 06/10/25:
+
+Reward ok, working on developing feature vectors as input to the model, in order to keep d_in relatevely small

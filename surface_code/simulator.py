@@ -4,7 +4,7 @@ import numpy as np
 from surface_code.marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
 from surface_code.stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_stats, summarize_episode
 from surface_code.inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
-from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs, split_DET_by_round, get_syndrome_sequence_from_DET, logical_error_rate
+from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs, split_DET_by_round, get_syndrome_sequence_from_DET, logical_error_rate, decode_action_index
 from surface_code.M1 import mask_generator_M1
 from surface_code.M2 import mask_generator_M2
 from visuals.corrs import make_Crr_heatmaps
@@ -532,23 +532,27 @@ for ep in range(episodes):
     neg_frac_ep=[]
 
     all_action_masks=[]
-    obs_next_np=None
+    obs_prev_np=None
+
+
     for t in range(env.R):   # R = 9
 
-    #chooose action from agent
-        logits, V_t, h_t = agent.act(obs)         
-        a_t, logp_t = sample_from_logits(logits, mode=mode)       # your MultiDiscrete or Discrete policy
-        a_t_cpu = a_t.detach().cpu()
+        #chooose action from agent
+        logits, V_t, h_t = agent.act(obs)   
+        # print(f'logits shape: {len(logits)}')        is (S) and since we intialized the Agent with 2*d+1 actions then we have 2*d+1 values 
+        a_t, logp_t = sample_from_logits(logits, mode=mode)       # MultiDiscrete or Discrete policy
+        # print(f'Action chosen on round {t} size: {a_t.shape} and max value: {a_t.max()} (we have D={len(data_qus)}) and lowest (should not be 0): {a_t.min()}')
+        a_t_cpu = a_t.detach().cpu()  #should be of size 2*d without zeros? 
         logp_t_cpu = logp_t.detach().cpu()
+        
 
-
-    #make action mask ready for injecton with flipsim
+      #make action mask ready for injecton with flipsim
         action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)
-
+        gate,qubit =decode_action_index(a=a_t,D=len(data_qus), device=device )
+        print(f'Round {t} and shot 500 we decided on {gate[500]} on qubit {qubit[500]} ')
         # x_mask=action_mask.get('X')
         # z_mask=action_mask.get('Z')
         # print(f'Action mask shapes:\n\tX: {x_mask.shape}\n\tZ:{z_mask.shape}')
-
 
         #check whether these masks have anythign in them:
         did_act, nx, nz = does_action_mask_have_anything(action_mask)
@@ -558,29 +562,39 @@ for ep in range(episodes):
         stats_act["X"] += int(action_mask["X"].sum())
         stats_act["Z"] += int(action_mask["Z"].sum())
 
-
-
-
-    #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
-    #perfect corretions (making the syndrome be all zeros), could potentially be overshadowed by the noise injecyion after, cause we measure after the mask injections,
-    #but that's normal 
+        #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
+        #perfect corretions (making the syndrome be all zeros), could potentially be overshadowed by the noise injecyion after, cause we measure after the mask injections,
+        #but that's normal 
         obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
-        r_step=step_reward(obs_prev_round=obs_next_np, obs_round=obs_current)
-    #   print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
-        obs_next_np=obs_current
+
+        r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current)
+        curr_sum = obs_current.sum(axis=1)
+        prev_sum=obs_prev_np.sum(axis=1)
+        cleared = np.sum((obs_prev_np == 1) & (obs_current == 0), axis=1)
+        new = np.sum((obs_prev_np== 0) & (obs_current == 1), axis=1)
+        '''
+        We might actually need to compress the observations (#shots, #dets) at some point, since when the code distance grows, the vector will become v v big
+        SO it would be great to haev a feature vector func???
+        in irder for d_in to remain 8 
+        '''
+        if t==int(env.R/2):
+            print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
+            print(f'Reward: {r_step}')
+        obs_prev_np=obs_current
         
         pos_frac_ep.append((r_step > 0).mean())
         neg_frac_ep.append((r_step < 0).mean())
 
-        obs = torch.from_numpy(obs_next_np).float().to(device)
+        obs = torch.from_numpy(obs_prev_np).float().to(device)
         all_action_masks.append(action_mask)
 
     # episode end
     dets, MR, obs_final, reward_terminal = env.finish_measure()
     print("Episode corrections:", stats_act)
-    print(f'Reward: {final_reward(obs_flips=obs_final)}')
+    final_rew=final_reward(obs_flips=obs_final)
+    print(f'Reward: {final_rew} with {np.sum(final_rew==-1)}')
 
-
+    print(f'Obs final: {obs_final.shape} with {np.sum(obs_final)}')
     ler=logical_error_rate(S, obs_final)
     lers.append(ler)
 
@@ -597,9 +611,9 @@ for ep in range(episodes):
 
 
 
-analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
-plot_LERvsSTEPS(lers)
-plot_step_reward_trends(pos_frac, neg_frac)
+# analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
+# plot_LERvsSTEPS(lers)
+# plot_step_reward_trends(pos_frac, neg_frac)
 
 
 

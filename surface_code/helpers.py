@@ -509,3 +509,40 @@ def logical_error_rate(shots:int, obs):
         if obs[:,s] == 1:
             logical_errors.append(s)
     return float(len(logical_errors)/shots)
+
+
+
+
+
+import torch
+
+def discrete_num_actions(D: int) -> int:
+    return 1 + 2*D
+
+def decode_action_index(a: torch.LongTensor, D: int, device):
+    """
+    a: (S,) int64 class ids
+    Returns:
+      which_gate: (S,) in {'I','X','Z'}
+      which_qubit: (S,) int with -1 for 'I' (noop), else [0..D-1]
+    """
+    S = a.shape[0]
+    which_gate = torch.empty(S, dtype=torch.int8, device=device)   # 0=I,1=X,2=Z (use strings if you prefer)
+    which_qubit = torch.full((S,), -1, dtype=torch.int64, device=device)
+
+    # no-op
+    mask_I = (a == 0)
+    which_gate[mask_I] = 0
+
+    # X block
+    mask_X = ((a >= 1) & (a <= D)).to(device)
+    
+    which_gate[mask_X] = 1
+    which_qubit[mask_X] = a[mask_X] - 1
+
+    # Z block
+    mask_Z = ((a >= D+1) & (a <= 2*D)).to(device)
+    which_gate[mask_Z] = 2
+    which_qubit[mask_Z] = a[mask_Z] - (D+1)
+
+    return which_gate, which_qubit

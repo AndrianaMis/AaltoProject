@@ -18,17 +18,17 @@ import torch.nn as nn
 
 
 class MambaBackbone(nn.Module):
-    def __init__(self, d_in=8, d_model=256, depth=4):
+    def __init__(self, d_in=8, d_model=256, depth=4):   #d_in=obs size, d_model=latent state size, depth=stacked mamba layerss
         super().__init__()
-        self.in_proj = nn.Linear(d_in, d_model)
-        self.layers  = nn.ModuleList([Mamba(d_model=d_model, layer_idx=i) for i in range(depth)])
-        self.norm    = nn.LayerNorm(d_model)
-    def allocate_cache(self, B):
+        self.in_proj = nn.Linear(d_in, d_model) #project 
+        self.layers  = nn.ModuleList([Mamba(d_model=d_model, layer_idx=i) for i in range(depth)]) #process through mamba layers
+        self.norm    = nn.LayerNorm(d_model) #normalize
+    def allocate_cache(self, B):  #technique to create cache with size B=#shots
         # one cache (conv_state, ssm_state) per layer
         return [ly.allocate_inference_cache(B, max_seqlen=1) for ly in self.layers]
 
     @torch.no_grad()
-    def mamba_step(self, x_t, cache):          # x_t: (B, 1, d_in)
+    def mamba_step(self, x_t, cache):          # x_t: (B, 1, d_in) single round obs, cache is the hidden states from prevs
         device = next(self.parameters()).device
         x_t = x_t.to(device)
         h = self.in_proj(x_t)
@@ -41,25 +41,29 @@ class MambaBackbone(nn.Module):
 class PolicyValue(nn.Module):
     def __init__(self, d_model=128, n_actions=2, squash=False):
         super().__init__()
-        self.pi = nn.Linear(d_model, n_actions)  # logits for your action encoding
+        self.pi = nn.Linear(d_model, n_actions)  # logits for  action encoding
         self.v  = nn.Linear(d_model, 1)
-    def forward(self, h_t):                      # h_t: (B, d_model)
-        logits = self.pi(h_t)
-        value  = self.v(h_t).squeeze(-1)
+    def forward(self, h_t):                      # h_t: (B, d_model), the latent state
+        logits = self.pi(h_t) #policy logitgs
+        
+        value  = self.v(h_t).squeeze(-1)#state val
         return logits, value
 
 
 
 #class buffer(nn.Module):
-
+##basically the wrapper between mamba and PPO (and later Kalman)
 class DecoderAgent(nn.Module):
     def __init__(self, d_in=8, d_model=128, depth=4, n_actions=2):
         super().__init__()
         self.backbone = MambaBackbone(d_in, d_model, depth)
+        self.Kalman=None    #only for now 
         self.heads    = PolicyValue(d_model, n_actions)
+
         self.cache = None
 
-    def begin_episode(self, B, device=None):
+
+    def begin_episode(self, B, device=None):  #moves cache states to device
         if device is None:
             device = next(self.parameters()).device
         self.cache = self.backbone.allocate_cache(B)
@@ -72,7 +76,7 @@ class DecoderAgent(nn.Module):
         self.cache = moved
 
     @torch.no_grad()
-    def act(self, obs_t):                 # obs_t: (B, d_in), ideally float32 in [0,1]
+    def act(self, obs_t):                 # obs_t: (B, d_in) obs for round t, ideally float32 in [0,1]
         x = obs_t[:, None, :]             # -> (B, 1, d_in)
         device = next(self.backbone.parameters()).device
         dtype = next(self.backbone.parameters()).dtype
@@ -103,11 +107,12 @@ class RolloutBuffer:
     We store raw obs (so we can re-forward with grads), actions, logp, values, rewards.
     """
     def __init__(self, obs_dim: int, device: torch.device | str = "cuda"):
+        print('\ninitialized RolloutBuffer (PPO mem)!\n')
         self.obs_dim = obs_dim
         self.device = torch.device(device)
         self.reset()
 
-    def reset(self):
+    def reset(self):  #clears history
         self.obs      = []
         self.actions  = []
         self.logp     = []
@@ -121,12 +126,12 @@ class RolloutBuffer:
             mask_t: torch.Tensor | None = None):
         """
         Shapes:
-          obs_t:    (B, obs_dim)
-          action_t: (B, ...)  (Discrete: (B,), MultiDiscrete: (B,D))
-          logp_t:   (B,)
-          value_t:  (B,)
-          reward_t: (B,)
-          mask_t:   (B,)  (default=1.0)
+          obs_t:    (B, obs_dim)  current observations
+          action_t: (B, ...)  (Discrete: (B,), MultiDiscrete: (B,D))   chosen actions
+          logp_t:   (B,)     log-prob of chosen action
+          value_t:  (B,)   critic value estimate
+          reward_t: (B,)    scalar (step) reward
+          mask_t:   (B,)  (default=1.0)    =1 if not done, 0 if ep ended
         """
         if mask_t is None:
             mask_t = torch.ones_like(value_t, device=value_t.device)
@@ -137,6 +142,13 @@ class RolloutBuffer:
         self.rewards.append(reward_t.detach())
         self.masks.append(mask_t.detach())
 
+
+
+
+#the advantage tells us how much better an action is than average given the current state.
+#the finalize func computes Generalized Adv Est
+#adv=reward_curr + gamma*NextVal(est) - CurrVal(est) + gamma*lambda*next_adv !!!!!!
+#So GAE is basically an exponentially discounted sum of TD errors.
     @torch.no_grad()
     def finalize(self, cfg: RolloutConfig, last_value: torch.Tensor | None = None):
         """
@@ -150,7 +162,7 @@ class RolloutBuffer:
         # Stack time-major
         values  = torch.stack(self.values,  dim=0)        # (T,B)
         rewards = torch.stack(self.rewards, dim=0)        # (T,B)
-        masks   = torch.stack(self.masks,   dim=0)        # (T,B)
+        masks   = torch.stack(self.masks,   dim=0)        # (T,B)     #whether the ep is alive or not
 
         T, B = rewards.shape
         if last_value is None:
@@ -298,7 +310,7 @@ import torch.nn.functional as F
 def sample_from_logits(logits: torch.Tensor, mode: str):
     """
     mode:
-      - 'discrete'         : logits shape (B, A)
+      - 'discrete'         : logits shape (B, A) 2d+1
       - 'multidiscrete'    : logits shape (B, D, C)  (per-qubit categorical)
     Returns:
       actions, logp

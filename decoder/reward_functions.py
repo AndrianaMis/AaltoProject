@@ -11,7 +11,7 @@ def step_reward(obs_prev_round, obs_round, alpha:float=0.1,beta:float=0.05):
     det_fired = obs_round.sum(axis=1)     # (S,)
 
     if obs_prev_round is not None:
-        prev_det_fired = obs_prev_round.sum(axis=1)  # (S,)
+        prev_det_fired = obs_prev_round.sum(axis=1)  # (S,)   one value per shot
         cleared = np.maximum(prev_det_fired - det_fired, 0)     #did we fix anything?
         reward_clear = alpha * cleared
     else:
@@ -37,6 +37,6 @@ def final_reward(obs_flips: np.ndarray) -> np.ndarray:
     """
     # For surface code memory: 1 observable = logical X/Z parity
     # If flip = 1 → logical error
-    logical_error = obs_flips.sum(axis=0) > 0   # (S,)
+    logical_error = obs_flips.sum(axis=0) > 0   # (S,)  #np.where(condition, A, B) → element-wise: if condition is True → take A else → take B
     reward = np.where(logical_error, -1.0, +1.0)
     return reward
