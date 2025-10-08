@@ -213,13 +213,13 @@ class StimDecoderEnv:
             dets_before = self.sim.get_detector_flips().shape[0]
             self.sim.do(self.suffix)
             dets_after  = self.sim.get_detector_flips().shape[0]
-            print("DET before suffix:", dets_before, " after suffix:", dets_after)  # expect +4
+      #      print("DET before suffix:", dets_before, " after suffix:", dets_after)  # expect +4
 
 
         dets = self.sim.get_detector_flips().astype(np.uint8)     # (N_det, S)
         obs  = self.sim.get_observable_flips().astype(np.uint8)   # (N_obs, S)
         meas = self.sim.get_measurement_flips().astype(np.uint8)  # (A*(R+1)+D, S)
-        print(f'observables: {obs.shape}')
+     #   print(f'observables: {obs.shape}')
         # Slice body ancilla MR only (exclude prefix A, suffix D)
         A = len(self.anc_ids); D = len(self.data_ids); R = self.R
         M_expected = A*(R+1) + D

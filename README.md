@@ -118,3 +118,6 @@ Feature vector ready and of shape 9. We have concatenated the following:
 - New firing detectors -> how many didn't fire before but did now
 - Round fraction -> value showing where in the episode we are now 
 - Last action one hot encoding -> encodes in just 0,1 the last gate (only gate) we applied
+
+
+RolloutBuffer and PPO heads reviewed. Must work on ppo_optimiziation algorithm

@@ -12,7 +12,7 @@ from surface_code.M0 import mask_generator, mask_init
 from visuals import corrs
 from .export import export_syndrome_dataset
 from surface_code.stats import analyze_decoding_stats
-from decoder.KalMamba import DecoderAgent, RolloutBuffer
+from decoder.KalMamba import DecoderAgent, RolloutBuffer, RolloutConfig
 from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything
 import torch
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
@@ -516,21 +516,23 @@ Q_total = max([0] + all_qids)
 B = S  # shots in parallel
 mode="discrete"
 lers=[]
-episodes=1
+episodes=3
 pos_frac=[]
 neg_frac=[]
+done_mask=torch.tensor(1.0)
+print(f'done mask: {done_mask}')
 for ep in range(episodes):
         
     # --- episode init ---
     obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
     obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
     agent.begin_episode(B, device=device)
-    buf = RolloutBuffer(obs_dim=obs.shape[1])  # store per-step data
+    buf = RolloutBuffer(obs_dim=9)  # store per-step data
     buf.reset()
 
     print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
     stats_act = {"X": 0, "Z": 0}
-
+    print(f'\nEpisode {ep} initialized!')
 
     pos_frac_ep=[]
     neg_frac_ep=[]
@@ -540,7 +542,7 @@ for ep in range(episodes):
     feature_vector=encode_obs(obs_curr=obs, obs_prev=None, last_action= 0, round_idx=0, total_rounds=env.R)
     feature_vector = torch.from_numpy(feature_vector).to(device)  # (B, 9)
 
-    print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
+ #   print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
     for t in range(env.R):   # R = 9
 
         #chooose action from agent
@@ -586,11 +588,11 @@ for ep in range(episodes):
         r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current)
         last_action=gate
         feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
-        feature_vector = torch.from_numpy(feature_vector).to(device)  # (B, 9)
+        feature_vector = torch.from_numpy(feature_vector).float().to(device)  # (B, 9)
 
-        if t==int(env.R/2):
-            print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
-            print(f'Reward: {r_step}')
+        # if t==int(env.R/2):
+        #     print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
+        #     print(f'Reward: {r_step}')
         obs_prev_np=obs_current
         
         pos_frac_ep.append((r_step > 0).mean())
@@ -598,21 +600,32 @@ for ep in range(episodes):
 
       #  obs = torch.from_numpy(obs_prev_np).float().to(device)
         all_action_masks.append(action_mask)
+        
+
+        '''Update buffer, compute GAE'''
+
+        obs_c_tensor=torch.from_numpy(obs_current).float().to(device)
+        r_step_tensor=torch.from_numpy(r_step).float().to(device)
+        if ep==episodes:
+            done_mask=torch.tensor(0)
+        buf.add(obs_t=obs_c_tensor,action_t=a_t, logp_t=logp_t, value_t=V_t, reward_t=r_step_tensor, mask_t=done_mask)
 
     # episode end
     dets, MR, obs_final, reward_terminal = env.finish_measure()
-    print("Episode corrections:", stats_act)
+   # print("Episode corrections:", stats_act)
     final_rew=final_reward(obs_flips=obs_final)
-    print(f'Reward: {final_rew} with {np.sum(final_rew==-1)}')
+    final_rew_tensor=torch.from_numpy(final_rew).float().to(device)
+#    print(f'Reward: {final_rew} with {np.sum(final_rew==-1)}')
 
-    print(f'Obs final: {obs_final.shape} with {np.sum(obs_final)}')
+    buf.finalize(cfg=RolloutConfig(),last_value=None)
     ler=logical_error_rate(S, obs_final)
     lers.append(ler)
 
     # take mean across rounds in this episode
     pos_frac.append(np.mean(pos_frac_ep))
     neg_frac.append(np.mean(neg_frac_ep))
-
+    print(f"[Episode {ep}] LER={logical_error_rate(B, obs_final):.4f} "
+          f"mean step reward={torch.mean(buf._advs):.4f}")
 
 
 
