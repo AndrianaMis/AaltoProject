@@ -4,7 +4,7 @@ import numpy as np
 from surface_code.marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
 from surface_code.stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_stats, summarize_episode
 from surface_code.inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
-from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs, split_DET_by_round, get_syndrome_sequence_from_DET, logical_error_rate, decode_action_index
+from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs, split_DET_by_round, get_syndrome_sequence_from_DET, logical_error_rate, decode_action_index, encode_obs
 from surface_code.M1 import mask_generator_M1
 from surface_code.M2 import mask_generator_M2
 from visuals.corrs import make_Crr_heatmaps
@@ -504,7 +504,11 @@ S_tot=10_000   #injection
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
+
+#for the d_in, it will be the feature vector in, if we include the mean of current detectors in encode_input function. 
+#So, it will be 9. 
+#agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
+agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
 
 
 all_qids = list(data_qus) + list(anchs)
@@ -533,15 +537,17 @@ for ep in range(episodes):
 
     all_action_masks=[]
     obs_prev_np=None
+    feature_vector=encode_obs(obs_curr=obs, obs_prev=None, last_action= 0, round_idx=0, total_rounds=env.R)
+    feature_vector = torch.from_numpy(feature_vector).to(device)  # (B, 9)
 
-
+    print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
     for t in range(env.R):   # R = 9
 
         #chooose action from agent
-        logits, V_t, h_t = agent.act(obs)   
+        logits, V_t, h_t = agent.act(feature_vector)   
         # print(f'logits shape: {len(logits)}')        is (S) and since we intialized the Agent with 2*d+1 actions then we have 2*d+1 values 
         a_t, logp_t = sample_from_logits(logits, mode=mode)       # MultiDiscrete or Discrete policy
-        # print(f'Action chosen on round {t} size: {a_t.shape} and max value: {a_t.max()} (we have D={len(data_qus)}) and lowest (should not be 0): {a_t.min()}')
+        #print(f'Action chosen on round {t} size: {a_t.shape} and max value: {a_t.max()} (we have D={len(data_qus)}) and lowest (should  be 0): {a_t.min()}')
         a_t_cpu = a_t.detach().cpu()  #should be of size 2*d without zeros? 
         logp_t_cpu = logp_t.detach().cpu()
         
@@ -549,7 +555,7 @@ for ep in range(episodes):
       #make action mask ready for injecton with flipsim
         action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)
         gate,qubit =decode_action_index(a=a_t,D=len(data_qus), device=device )
-        print(f'Round {t} and shot 500 we decided on {gate[500]} on qubit {qubit[500]} ')
+        #print(f'Round {t} and shot 500 we decided on {gate[500]} on qubit {qubit[500]} ')
         # x_mask=action_mask.get('X')
         # z_mask=action_mask.get('Z')
         # print(f'Action mask shapes:\n\tX: {x_mask.shape}\n\tZ:{z_mask.shape}')
@@ -567,16 +573,21 @@ for ep in range(episodes):
         #but that's normal 
         obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
 
-        r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current)
-        curr_sum = obs_current.sum(axis=1)
-        prev_sum=obs_prev_np.sum(axis=1)
-        cleared = np.sum((obs_prev_np == 1) & (obs_current == 0), axis=1)
-        new = np.sum((obs_prev_np== 0) & (obs_current == 1), axis=1)
         '''
         We might actually need to compress the observations (#shots, #dets) at some point, since when the code distance grows, the vector will become v v big
         SO it would be great to haev a feature vector func???
         in irder for d_in to remain 8 
+
+
+        So, below im showing some important features that create a more clear picture of the curent and prev state of the env, if we make the feature vecto
+        encoding thesee feature, we have a more rich representation of the env
         '''
+
+        r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current)
+        last_action=gate
+        feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
+        feature_vector = torch.from_numpy(feature_vector).to(device)  # (B, 9)
+
         if t==int(env.R/2):
             print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
             print(f'Reward: {r_step}')
@@ -585,7 +596,7 @@ for ep in range(episodes):
         pos_frac_ep.append((r_step > 0).mean())
         neg_frac_ep.append((r_step < 0).mean())
 
-        obs = torch.from_numpy(obs_prev_np).float().to(device)
+      #  obs = torch.from_numpy(obs_prev_np).float().to(device)
         all_action_masks.append(action_mask)
 
     # episode end

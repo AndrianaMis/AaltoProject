@@ -266,7 +266,7 @@ def action_to_masks(
     zmask = np.zeros((Q, S), dtype=bool)
 
     if mode == "discrete":
-        # actions: (S,) integers in [0, 2*D]
+        # actions: (S,) integers in [0, 2*D], so if for example we have value 2 then at qubit 2 -> X
         a = actions.detach().to("cpu").numpy().astype(int)  # (S,)
         D = len(data_ids)
         for s in range(S):

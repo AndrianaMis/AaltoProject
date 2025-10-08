@@ -541,8 +541,46 @@ def decode_action_index(a: torch.LongTensor, D: int, device):
     which_qubit[mask_X] = a[mask_X] - 1
 
     # Z block
-    mask_Z = ((a >= D+1) & (a <= 2*D)).to(device)
+    mask_Z = ((a >= D+1) & (a <= 2*D)).to(device)      #theseis
     which_gate[mask_Z] = 2
     which_qubit[mask_Z] = a[mask_Z] - (D+1)
 
     return which_gate, which_qubit
+
+def to_numpy(x):
+    if x is None:
+        return None
+    if isinstance(x, torch.Tensor):
+        return x.detach().cpu().numpy()
+    return x
+
+
+def encode_obs(obs_curr, obs_prev, last_action, round_idx, total_rounds, pca_proj=None):
+    S, n_det = obs_curr.shape
+    obs_curr = to_numpy(obs_curr)
+    obs_prev = to_numpy(obs_prev)
+    last_action = to_numpy(last_action)
+
+    
+    curr_sum = obs_curr.sum(axis=1, keepdims=True)
+    prev_sum = np.zeros_like(curr_sum) if obs_prev is None else obs_prev.sum(axis=1, keepdims=True)
+    cleared  = np.zeros_like(curr_sum) if obs_prev is None else ((obs_prev == 1) & (obs_curr == 0)).sum(axis=1, keepdims=True)
+    new_fire = np.zeros_like(curr_sum) if obs_prev is None else ((obs_prev == 0) & (obs_curr == 1)).sum(axis=1, keepdims=True)
+
+    round_frac = np.full((S,1), round_idx / total_rounds)   #which part of the episode are we on?
+
+    if isinstance(last_action, torch.Tensor):
+        last_action = last_action.detach().cpu().numpy()
+
+##one hot encoding on the actions will be a S,3 dimensional array which will tell us what gate weve applied on each shot. Doesnt have to state the qubit,  
+# so no need for values or extra post processing to figure out the gate 
+    last_act_oh = np.zeros((S, 3))  # [I,X,Z] one-hot
+    last_act_oh[np.arange(S), last_action] = 1   #last actions is 0,1 or 2 so it becomes the index of the one-hot
+
+    if pca_proj is not None:
+        det_feat = obs_curr @ pca_proj   # compress detectors
+    else:
+        det_feat = obs_curr.mean(axis=1, keepdims=True)  # simple fallback
+
+    features = np.concatenate([curr_sum, prev_sum, cleared, new_fire, round_frac, last_act_oh, det_feat], axis=1)
+    return features.astype(np.float32)

@@ -107,3 +107,14 @@ Added some visualizations in plots.py
 ## 06/10/25:
 
 Reward ok, working on developing feature vectors as input to the model, in order to keep d_in relatevely small
+
+
+## 08/10/25:
+
+Feature vector ready and of shape 9. We have concatenated the following:
+- Current observations (S,dets) sum -> how many of them fired in this round
+- Previous obs sum -> how many fired on the prev round
+- Cleared detectors-> how many fired on the prev round but not on this one
+- New firing detectors -> how many didn't fire before but did now
+- Round fraction -> value showing where in the episode we are now 
+- Last action one hot encoding -> encodes in just 0,1 the last gate (only gate) we applied
