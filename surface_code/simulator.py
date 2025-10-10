@@ -16,7 +16,7 @@ from decoder.KalMamba import DecoderAgent, RolloutBuffer, RolloutConfig
 from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything
 import torch
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
-from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits
+from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits, optimize_ppo
 from decoder.reward_functions import step_reward, final_reward
 from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends
 
@@ -509,6 +509,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #So, it will be 9. 
 #agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
 agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
+optimizer = torch.optim.Adam(agent.parameters(), lr=3e-4)
 
 
 all_qids = list(data_qus) + list(anchs)
@@ -516,7 +517,7 @@ Q_total = max([0] + all_qids)
 B = S  # shots in parallel
 mode="discrete"
 lers=[]
-episodes=3
+episodes=1
 pos_frac=[]
 neg_frac=[]
 done_mask=torch.tensor(1.0)
@@ -545,37 +546,31 @@ for ep in range(episodes):
  #   print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
     for t in range(env.R):   # R = 9
 
-        #chooose action from agent
-        logits, V_t, h_t = agent.act(feature_vector)   
-        # print(f'logits shape: {len(logits)}')        is (S) and since we intialized the Agent with 2*d+1 actions then we have 2*d+1 values 
+        '''
+        1. the agent.act is using the critic-value_head to return V_t which is the estimate of the reward of the state
+        2. also it is giving us the logits, which are from the actor-policy_head 
+        3. we then get the action from the logits , which after is giving us the r_step reward and thus the actual value of the state
+        '''
+        logits, V_t, h_t = agent.act(feature_vector)    
         a_t, logp_t = sample_from_logits(logits, mode=mode)       # MultiDiscrete or Discrete policy
-        #print(f'Action chosen on round {t} size: {a_t.shape} and max value: {a_t.max()} (we have D={len(data_qus)}) and lowest (should  be 0): {a_t.min()}')
         a_t_cpu = a_t.detach().cpu()  #should be of size 2*d without zeros? 
         logp_t_cpu = logp_t.detach().cpu()
-        
+        action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)  #make action mask ready for injecton with flipsim
 
-      #make action mask ready for injecton with flipsim
-        action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)
+
         gate,qubit =decode_action_index(a=a_t,D=len(data_qus), device=device )
-        #print(f'Round {t} and shot 500 we decided on {gate[500]} on qubit {qubit[500]} ')
         # x_mask=action_mask.get('X')
         # z_mask=action_mask.get('Z')
-        # print(f'Action mask shapes:\n\tX: {x_mask.shape}\n\tZ:{z_mask.shape}')
-
-        #check whether these masks have anythign in them:
-        did_act, nx, nz = does_action_mask_have_anything(action_mask)
-        # if did_act:
-        #     print(f"Agent proposed {nx} Xs and {nz} Zs in this step")
-
+        did_act, nx, nz = does_action_mask_have_anything(action_mask)    #check whether these masks have anythign in them:
         stats_act["X"] += int(action_mask["X"].sum())
         stats_act["Z"] += int(action_mask["Z"].sum())
 
+
+        '''
         #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
         #perfect corretions (making the syndrome be all zeros), could potentially be overshadowed by the noise injecyion after, cause we measure after the mask injections,
         #but that's normal 
-        obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
 
-        '''
         We might actually need to compress the observations (#shots, #dets) at some point, since when the code distance grows, the vector will become v v big
         SO it would be great to haev a feature vector func???
         in irder for d_in to remain 8 
@@ -585,6 +580,7 @@ for ep in range(episodes):
         encoding thesee feature, we have a more rich representation of the env
         '''
 
+        obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
         r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current)
         last_action=gate
         feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
@@ -593,12 +589,10 @@ for ep in range(episodes):
         # if t==int(env.R/2):
         #     print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
         #     print(f'Reward: {r_step}')
+
         obs_prev_np=obs_current
-        
         pos_frac_ep.append((r_step > 0).mean())
         neg_frac_ep.append((r_step < 0).mean())
-
-      #  obs = torch.from_numpy(obs_prev_np).float().to(device)
         all_action_masks.append(action_mask)
         
 
@@ -608,18 +602,19 @@ for ep in range(episodes):
         r_step_tensor=torch.from_numpy(r_step).float().to(device)
         if ep==episodes:
             done_mask=torch.tensor(0)
-        buf.add(obs_t=obs_c_tensor,action_t=a_t, logp_t=logp_t, value_t=V_t, reward_t=r_step_tensor, mask_t=done_mask)
+        buf.add(obs_t=feature_vector,action_t=a_t, logp_t=logp_t, value_t=V_t, reward_t=r_step_tensor, mask_t=done_mask)
 
     # episode end
     dets, MR, obs_final, reward_terminal = env.finish_measure()
-   # print("Episode corrections:", stats_act)
     final_rew=final_reward(obs_flips=obs_final)
     final_rew_tensor=torch.from_numpy(final_rew).float().to(device)
-#    print(f'Reward: {final_rew} with {np.sum(final_rew==-1)}')
-
     buf.finalize(cfg=RolloutConfig(),last_value=None)
     ler=logical_error_rate(S, obs_final)
     lers.append(ler)
+    stats = optimize_ppo(agent, buf, optimizer,
+                     clip_eps=0.2, epochs=4, batch_size=8192,
+                     value_coef=0.5, entropy_coef=0.01)
+    print(f"PPO: pi={stats['loss_pi']:.3f} v={stats['loss_v']:.3f} H={stats['entropy']:.3f} KL={stats['kl']:.4f}")
 
     # take mean across rounds in this episode
     pos_frac.append(np.mean(pos_frac_ep))

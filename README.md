@@ -121,3 +121,7 @@ Feature vector ready and of shape 9. We have concatenated the following:
 
 
 RolloutBuffer and PPO heads reviewed. Must work on ppo_optimiziation algorithm
+
+## 10/10/25:
+optimize_ppo developed, obs in the buffer are now the feature vector and not the raw observations so they are (R,S,9=d_in)
+need to figure out some errors in loss.backward in ppo_optimize

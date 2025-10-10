@@ -86,7 +86,7 @@ class DecoderAgent(nn.Module):
 
         h = self.backbone.mamba_step(x_t, self.cache).squeeze(1)  # (B, d_model)
         logits, value = self.heads(h)     # (B, A), (B,)
-        return logits, value, h
+        return logits, value, h    #we will use the logits to get the action that leads to reward and the value is the estimate that we'll use for GAE 
 
 
   #  def sample_from_logits(logits):
@@ -126,7 +126,7 @@ class RolloutBuffer:
             mask_t: torch.Tensor | None = None):
         """
         Shapes:
-          obs_t:    (B, obs_dim)  current observations
+          obs_t:    (B, obs_dim)  current observations,,,, noo its d_in (feature vector)
           action_t: (B, ...)  (Discrete: (B,), MultiDiscrete: (B,D))   chosen actions
           logp_t:   (B,)     log-prob of chosen action
           value_t:  (B,)   critic value estimate
@@ -173,16 +173,17 @@ class RolloutBuffer:
         adv = torch.zeros(B, device=device)
         advs = []
         for t in reversed(range(T)):
-            delta = rewards[t] + gamma * next_values * masks[t] - values[t]
-            adv = delta + gamma * lam * masks[t] * adv
+            delta = rewards[t] + gamma * next_values * masks[t] - values[t]    #δ_t= r_t + γ*V_(t+1) - V_t
+            adv = delta + gamma * lam * masks[t] * adv                          #A_t=γλδ_(t+1)
             advs.append(adv)
             next_values = values[t]
         advs.reverse()
-        advantages = torch.stack(advs, dim=0)             # (T,B)
-        returns = advantages + values                      # (T,B)
+        advantages = torch.stack(advs, dim=0)             # (T,B)  A_t
+        returns = advantages + values                      # (T,B)  R_t   A_t=R_t-V_t
 
         # Cache tensors for minibatching
         self._obs     = torch.stack(self.obs,    dim=0)   # (T,B,obs_dim)
+        print(f'buffer obs of shape: {self._obs.shape}')
         self._actions = self._stack_actions(self.actions) # time-major
         self._logp    = torch.stack(self.logp,   dim=0)   # (T,B)
         self._values  = values
@@ -343,3 +344,112 @@ def sample_from_logits(logits: torch.Tensor, mode: str):
 
     else:
         raise ValueError("mode must be 'discrete' or 'multidiscrete'")
+
+
+
+
+
+
+import torch
+import torch.nn.functional as F
+from torch.distributions import Categorical
+
+@torch.no_grad()
+def _entropy_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    # logits: (N, A)
+    dist = Categorical(logits=logits)
+    return dist.entropy()  # (N,)
+
+def optimize_ppo(
+    agent,
+    buf,                              # RolloutBuffer after .finalize()
+    optimizer: torch.optim.Optimizer,
+    *,
+    clip_eps: float = 0.2,
+    epochs: int = 4,
+    batch_size: int = 8192,
+    value_coef: float = 0.5,
+    entropy_coef: float = 0.01,
+    max_grad_norm: float = 1.0,
+):
+    """
+    PPO update using time×batch flattened minibatches from your RolloutBuffer.
+
+    Expects buf.finalize(...) already called, so buf has:
+      buf._obs   : (T,B,d_in)
+      buf._actions : (T,B)          # Discrete (class ids)
+      buf._logp  : (T,B)
+      buf._advs  : (T,B)
+      buf._rets  : (T,B)
+    """
+    device = next(agent.parameters()).device
+
+    # convenience views (flatten time×batch)
+    def flat(x): return x.reshape(-1, *x.shape[2:]) if x.ndim > 2 else x.reshape(-1)
+
+    obs_all     = buf._obs.to(device)        # (T,B,d_in)
+
+    acts_all    = buf._actions.to(device)    # (T,B)
+    old_logp_all= buf._logp.to(device)       # (T,B)
+    advs_all    = buf._advs.to(device)       # (T,B)
+    rets_all    = buf._rets.to(device)       # (T,B)
+    values_all  = buf._values.to(device)     # (T,B) (only for logging if you want)
+
+    N_total = obs_all.shape[0] * obs_all.shape[1]
+
+    # training loop
+    stats = {"loss_pi": 0.0, "loss_v": 0.0, "entropy": 0.0, "kl": 0.0, "count": 0}
+
+    for _ in range(epochs):
+        for mb in buf.iter_minibatches(batch_size=batch_size, shuffle=True):
+            obs   = mb["obs"].to(device)       # (n, d_in)
+            print(f'obs shape: {obs.shape}')
+            acts  = mb["actions"].to(device)   # (n,)
+            oldlp = mb["logp"].to(device)      # (n,)
+            adv   = mb["advs"].to(device)      # (n,)
+            rets  = mb["rets"].to(device)      # (n,)
+
+            # Re-forward policy/value for the minibatch.
+            # Since the backbone is step-based (Mamba), allocate a fresh cache for this minibatch.
+            agent.begin_episode(B=obs.shape[0], device=device)
+            logits, v_pred, _ = agent.act(obs)          # logits:(n,A), v_pred:(n,)
+
+            # New log-prob of taken actions
+            logp = Categorical(logits=logits).log_prob(acts)   # (n,)
+            entropy = _entropy_from_logits(logits)             # (n,)
+
+            # PPO ratio
+            ratio = (logp - oldlp).exp()                       # (n,)
+
+            # Clipped surrogate policy loss
+            unclipped = ratio * adv
+            clipped   = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv
+            loss_pi   = -torch.min(unclipped, clipped).mean()
+
+            # Value loss
+            loss_v = F.mse_loss(v_pred, rets)
+
+            # Entropy bonus
+            ent = entropy.mean()
+
+            loss = loss_pi + value_coef * loss_v - entropy_coef * ent
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
+            optimizer.step()
+
+            # Diagnostics (approx KL = E[oldlp - newlp])
+            approx_kl = (oldlp - logp).mean().clamp_min(0.0).item()
+            stats["loss_pi"] += loss_pi.item()
+            stats["loss_v"]  += loss_v.item()
+            stats["entropy"] += ent.item()
+            stats["kl"]      += approx_kl
+            stats["count"]   += 1
+
+    # average stats
+    if stats["count"] > 0:
+        for k in ("loss_pi","loss_v","entropy","kl"):
+            stats[k] /= stats["count"]
+    return stats
+    
