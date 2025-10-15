@@ -80,7 +80,7 @@ class StimDecoderEnv:
             dets_before = self.sim.get_detector_flips().shape[0]
             self.sim.do(self.prefix)
             dets_after  = self.sim.get_detector_flips().shape[0]
-            print("DET before prefix:", dets_before, " after prefix:", dets_after)  # expect +4
+           # print("DET before prefix:", dets_before, " after prefix:", dets_after)  # expect +4
 
 
         # Return a dummy observation before any round (all-zeros of current round size),

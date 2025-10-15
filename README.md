@@ -125,3 +125,13 @@ RolloutBuffer and PPO heads reviewed. Must work on ppo_optimiziation algorithm
 ## 10/10/25:
 optimize_ppo developed, obs in the buffer are now the feature vector and not the raw observations so they are (R,S,9=d_in)
 need to figure out some errors in loss.backward in ppo_optimize
+
+## 13/10/25:
+
+fixed error caused by not letting the gradients pass through agent.act(). New function act_opt is a copy of the act() but without torch.no_grads()
+critic is exploding (critics output v_t <0)
+
+
+## 15/10/25
+
+fixed the exploding v_t. Parameters for the optimizer are now ok! All of the mamba parameters pass through. 

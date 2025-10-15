@@ -508,8 +508,22 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 #for the d_in, it will be the feature vector in, if we include the mean of current detectors in encode_input function. 
 #So, it will be 9. 
 #agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
+d_in=9
 agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
-optimizer = torch.optim.Adam(agent.parameters(), lr=3e-4)
+# example param groups
+optim_groups = [
+    {'params': agent.backbone.parameters(), 'lr': 3e-4},   # backbone
+    {'params': agent.heads.pi.parameters(),        'lr': 3e-4},   # policy head
+    {'params': agent.heads.v.parameters(),         'lr': 1e-4},   # value head (lower LR)
+]
+
+optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
+total = 0
+for i,g in enumerate(optimizer.param_groups):
+    cnt = sum(p.numel() for p in g['params'])
+    total += cnt
+    print(f"group{i}: lr={g['lr']} n_params={len(g['params'])} elems={cnt}")
+print("sum elems in optimizer:", total)
 
 
 all_qids = list(data_qus) + list(anchs)
@@ -517,13 +531,25 @@ Q_total = max([0] + all_qids)
 B = S  # shots in parallel
 mode="discrete"
 lers=[]
-episodes=1
+episodes=10
 pos_frac=[]
 neg_frac=[]
 done_mask=torch.tensor(1.0)
-print(f'done mask: {done_mask}')
 for ep in range(episodes):
-        
+    if ep==0: 
+        print("== requires_grad on backbone ==")
+        for n,p in agent.backbone.named_parameters():
+            print(n, p.requires_grad)
+
+        print("\n== optimizer param groups ==")
+        total = 0
+        for i,g in enumerate(optimizer.param_groups):
+            cnt = sum(p.numel() for p in g['params'])
+            total += cnt
+            print(f"group{i}: lr={g['lr']} n_params={len(g['params'])} elems={cnt}")
+        print("sum elems in optimizer:", total)
+        print("sum elems in agent:", sum(p.numel() for p in agent.parameters()))
+
     # --- episode init ---
     obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
     obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
@@ -531,9 +557,8 @@ for ep in range(episodes):
     buf = RolloutBuffer(obs_dim=9)  # store per-step data
     buf.reset()
 
-    print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
+    if ep==0: print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
     stats_act = {"X": 0, "Z": 0}
-    print(f'\nEpisode {ep} initialized!')
 
     pos_frac_ep=[]
     neg_frac_ep=[]
@@ -542,6 +567,8 @@ for ep in range(episodes):
     obs_prev_np=None
     feature_vector=encode_obs(obs_curr=obs, obs_prev=None, last_action= 0, round_idx=0, total_rounds=env.R)
     feature_vector = torch.from_numpy(feature_vector).to(device)  # (B, 9)
+    feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
+                    feature_vector.std(dim=0, keepdim=True) + 1e-6)
 
  #   print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
     for t in range(env.R):   # R = 9
@@ -585,6 +612,8 @@ for ep in range(episodes):
         last_action=gate
         feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
         feature_vector = torch.from_numpy(feature_vector).float().to(device)  # (B, 9)
+        feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
+                    feature_vector.std(dim=0, keepdim=True) + 1e-6)
 
         # if t==int(env.R/2):
         #     print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
@@ -600,6 +629,10 @@ for ep in range(episodes):
 
         obs_c_tensor=torch.from_numpy(obs_current).float().to(device)
         r_step_tensor=torch.from_numpy(r_step).float().to(device)
+        r_step_tensor = torch.nan_to_num(r_step_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        # (optional) clip tiny range first days
+        r_step_tensor = torch.clamp(r_step_tensor, -1.0, 1.0)
+
         if ep==episodes:
             done_mask=torch.tensor(0)
         buf.add(obs_t=feature_vector,action_t=a_t, logp_t=logp_t, value_t=V_t, reward_t=r_step_tensor, mask_t=done_mask)
@@ -608,24 +641,40 @@ for ep in range(episodes):
     dets, MR, obs_final, reward_terminal = env.finish_measure()
     final_rew=final_reward(obs_flips=obs_final)
     final_rew_tensor=torch.from_numpy(final_rew).float().to(device)
+    final_rew_tensor = torch.nan_to_num(final_rew_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+    final_rew_tensor = torch.clamp(final_rew_tensor, -1.0, 1.0)         #oxi gia pnta
+    buf.rewards[-1] = buf.rewards[-1] + final_rew_tensor
+
     buf.finalize(cfg=RolloutConfig(),last_value=None)
+    # After buf.finalize(...)
+    advs = buf._advs
+    rets = buf._rets
+
+
+    # Defensive clamp (keeps training going while you debug)
+    buf._advs = torch.clamp(advs, -10.0, 10.0)
+    buf._rets = torch.clamp(rets, -10.0, 10.0)
+
     ler=logical_error_rate(S, obs_final)
     lers.append(ler)
+    #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
     stats = optimize_ppo(agent, buf, optimizer,
                      clip_eps=0.2, epochs=4, batch_size=8192,
                      value_coef=0.5, entropy_coef=0.01)
-    print(f"PPO: pi={stats['loss_pi']:.3f} v={stats['loss_v']:.3f} H={stats['entropy']:.3f} KL={stats['kl']:.4f}")
 
     # take mean across rounds in this episode
     pos_frac.append(np.mean(pos_frac_ep))
     neg_frac.append(np.mean(neg_frac_ep))
-    print(f"[Episode {ep}] LER={logical_error_rate(B, obs_final):.4f} "
+    print(f"\n[Episode {ep}] LER={logical_error_rate(B, obs_final):.4f} "
           f"mean step reward={torch.mean(buf._advs):.4f}")
+    print("ADVS stats:", torch.isnan(advs).sum().item(), advs.min().item(), advs.max().item(), advs.std().item())
+    print("RETS stats:", torch.isnan(rets).sum().item(), rets.min().item(), rets.max().item(), rets.std().item())
+
+    print(f"PPO: pi={stats['loss_pi']:.3f} v={stats['loss_v']:.3f} H={stats['entropy']:.3f} KL={stats['kl']:.4f}")
 
 
 
-
-    summarize_episode(all_action_masks=all_action_masks, observables=obs_final)
+   # summarize_episode(all_action_masks=all_action_masks, observables=obs_final)
 
 
 
@@ -637,7 +686,8 @@ for ep in range(episodes):
 
 
 
-
+dev=next(agent.parameters()).device
+print(f'Device used: {dev}')
 
 
 

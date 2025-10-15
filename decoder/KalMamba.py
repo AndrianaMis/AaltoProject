@@ -23,9 +23,20 @@ class MambaBackbone(nn.Module):
         self.in_proj = nn.Linear(d_in, d_model) #project 
         self.layers  = nn.ModuleList([Mamba(d_model=d_model, layer_idx=i) for i in range(depth)]) #process through mamba layers
         self.norm    = nn.LayerNorm(d_model) #normalize
+    
     def allocate_cache(self, B):  #technique to create cache with size B=#shots
         # one cache (conv_state, ssm_state) per layer
         return [ly.allocate_inference_cache(B, max_seqlen=1) for ly in self.layers]
+
+
+
+
+    def mamba_step_opt(self, x_t, cache=None):     # x_t: (B, 1, d_in)
+        # cache is unused here; you can ignore it in training
+        h = self.in_proj(x_t)                      # (B, 1, d_model)
+        for ly in self.layers:
+            h = ly(h)                              # <- differentiable forward
+        return self.norm(h)  
 
     @torch.no_grad()
     def mamba_step(self, x_t, cache):          # x_t: (B, 1, d_in) single round obs, cache is the hidden states from prevs
@@ -36,8 +47,6 @@ class MambaBackbone(nn.Module):
             h, _, _ = ly.step(h, conv_state, ssm_state)    # (B, 1, d_model)
         return self.norm(h)  # (B, 1, d_model)
 
-
-
 class PolicyValue(nn.Module):
     def __init__(self, d_model=128, n_actions=2, squash=False):
         super().__init__()
@@ -46,7 +55,9 @@ class PolicyValue(nn.Module):
     def forward(self, h_t):                      # h_t: (B, d_model), the latent state
         logits = self.pi(h_t) #policy logitgs
         
-        value  = self.v(h_t).squeeze(-1)#state val
+        #value  = self.v(h_t).squeeze(-1)#state val
+        value = torch.tanh(self.v(h_t)).squeeze(-1)
+
         return logits, value
 
 
@@ -74,6 +85,21 @@ class DecoderAgent(nn.Module):
             ssm_state  = ssm_state.to(device)
             moved.append((conv_state, ssm_state))
         self.cache = moved
+
+    def act_opt(self, obs_t):                 # obs_t: (B, d_in) obs for round t, ideally float32 in [0,1]
+        x = obs_t[:, None, :]             # -> (B, 1, d_in)
+        device = next(self.backbone.parameters()).device
+        dtype = next(self.backbone.parameters()).dtype
+
+        x_t = x.to(device).to(dtype)
+        self.cache = [(conv_state.to(device), ssm_state.to(device)) for conv_state, ssm_state in self.cache]
+
+        h = self.backbone.mamba_step_opt(x_t, self.cache).squeeze(1)  # (B, d_model)
+        logits, value = self.heads(h)     # (B, A), (B,)
+        return logits, value, h    #we will use the logits to get the action that leads to reward and the value is the estimate that we'll use for GAE 
+
+
+
 
     @torch.no_grad()
     def act(self, obs_t):                 # obs_t: (B, d_in) obs for round t, ideally float32 in [0,1]
@@ -107,7 +133,7 @@ class RolloutBuffer:
     We store raw obs (so we can re-forward with grads), actions, logp, values, rewards.
     """
     def __init__(self, obs_dim: int, device: torch.device | str = "cuda"):
-        print('\ninitialized RolloutBuffer (PPO mem)!\n')
+      #  print('\ninitialized RolloutBuffer (PPO mem)!\n')
         self.obs_dim = obs_dim
         self.device = torch.device(device)
         self.reset()
@@ -183,7 +209,7 @@ class RolloutBuffer:
 
         # Cache tensors for minibatching
         self._obs     = torch.stack(self.obs,    dim=0)   # (T,B,obs_dim)
-        print(f'buffer obs of shape: {self._obs.shape}')
+     #   print(f'buffer obs of shape: {self._obs.shape}')
         self._actions = self._stack_actions(self.actions) # time-major
         self._logp    = torch.stack(self.logp,   dim=0)   # (T,B)
         self._values  = values
@@ -212,6 +238,7 @@ class RolloutBuffer:
         assert self._finalized, "Call finalize() first"
         T, B = self._logp.shape
         N = T * B
+
         idx = torch.arange(N)
         if shuffle:
             idx = idx[torch.randperm(N)]
@@ -383,7 +410,6 @@ def optimize_ppo(
       buf._rets  : (T,B)
     """
     device = next(agent.parameters()).device
-
     # convenience views (flatten time×batch)
     def flat(x): return x.reshape(-1, *x.shape[2:]) if x.ndim > 2 else x.reshape(-1)
 
@@ -402,8 +428,8 @@ def optimize_ppo(
 
     for _ in range(epochs):
         for mb in buf.iter_minibatches(batch_size=batch_size, shuffle=True):
+          #  print(f'mb:{mb}')
             obs   = mb["obs"].to(device)       # (n, d_in)
-            print(f'obs shape: {obs.shape}')
             acts  = mb["actions"].to(device)   # (n,)
             oldlp = mb["logp"].to(device)      # (n,)
             adv   = mb["advs"].to(device)      # (n,)
@@ -412,7 +438,9 @@ def optimize_ppo(
             # Re-forward policy/value for the minibatch.
             # Since the backbone is step-based (Mamba), allocate a fresh cache for this minibatch.
             agent.begin_episode(B=obs.shape[0], device=device)
-            logits, v_pred, _ = agent.act(obs)          # logits:(n,A), v_pred:(n,)
+            logits, v_pred, _ = agent.act_opt(obs)          # logits:(n,A), v_pred:(n,)
+
+            #print("Grad enabled?", logits.requires_grad, v_pred.requires_grad)    we do get True True
 
             # New log-prob of taken actions
             logp = Categorical(logits=logits).log_prob(acts)   # (n,)
@@ -430,12 +458,21 @@ def optimize_ppo(
             loss_v = F.mse_loss(v_pred, rets)
 
             # Entropy bonus
+            # 5) Entropy bonus (maximize entropy → subtract in loss)
+
             ent = entropy.mean()
 
             loss = loss_pi + value_coef * loss_v - entropy_coef * ent
+#            print("V_t mean:", v_pred.mean().item(), "std:", v_pred.std().item())
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
+            # for name, param in agent.named_parameters():
+            #     if param.grad is not None:
+            #         print(name, "grad mean:", param.grad.mean().item(), "std:", param.grad.std().item())
+            #     else:
+            #         print(name, "grad is None")
+
             torch.nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
             optimizer.step()
 
