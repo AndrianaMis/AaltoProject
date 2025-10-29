@@ -584,3 +584,17 @@ def encode_obs(obs_curr, obs_prev, last_action, round_idx, total_rounds, pca_pro
 
     features = np.concatenate([curr_sum, prev_sum, cleared, new_fire, round_frac, last_act_oh, det_feat], axis=1)
     return features.astype(np.float32)
+
+
+
+
+def set_group_lr(optimizer, name, *, factor=None, value=None,
+                 min_lr=1e-6, max_lr=3e-3):
+    for g in optimizer.param_groups:
+        if g.get("name") == name:
+            if value is not None:
+                g["lr"] = float(value)
+            elif factor is not None:
+                g["lr"] = float(min(max(g["lr"] * factor, min_lr), max_lr))
+            return g["lr"]  # return new lr
+    return None  # group not found

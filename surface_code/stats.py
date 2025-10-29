@@ -85,15 +85,15 @@ def measure_stacked_mask_stats(M, label="M_data_local", show_examples=5):
     # Pauli composition
     cntX = int((M == 1).sum()); cntZ = int((M == 2).sum()); cntY = int((M == 3).sum())
 
-    print(f"\n\n[{label}] shape={M.shape}  nnz={nnz_total}  p̂={p_hat:.6f}")
-    print(f"  shots S={S}: empty_fraction={frac_empty:.3f} (target ~ exp(-D*R*p))")
-    print(f"  counts: X={cntX}, Z={cntZ}, Y={cntY}")
+    # print(f"\n\n[{label}] shape={M.shape}  nnz={nnz_total}  p̂={p_hat:.6f}")
+    # print(f"  shots S={S}: empty_fraction={frac_empty:.3f} (target ~ exp(-D*R*p))")
+    # print(f"  counts: X={cntX}, Z={cntZ}, Y={cntY}")
     # quick examples
     if show_examples > 0 and nnz_total > 0:
         idx = np.argwhere(nz)
         for i in range(min(show_examples, idx.shape[0])):
             d, r, s = map(int, idx[i])
-            print(f"  example[{i}]: drow={d}, round={r}, shot={s}, code={int(M[d,r,s])}")
+            # print(f"  example[{i}]: drow={d}, round={r}, shot={s}, code={int(M[d,r,s])}")
 
     return {
         "shape": (D, R, S),
@@ -146,9 +146,9 @@ def measure_m2_mask_stats(M, label="M2", show_examples=10):
     # Pauli composition
     cntX = int((M == 1).sum()); cntZ = int((M == 2).sum()); cntY = int((M == 3).sum())
 
-    print(f"\n\n[{label}] shape={M.shape}  nnz={nnz_total}  p̂={p_hat:.6f}")
-    print(f"  shots S={S}: empty_fraction={frac_empty:.3f} (target ~ exp(-E*R*2*p))")
-    print(f"  counts: X={cntX}, Z={cntZ}, Y={cntY}")
+    # print(f"\n\n[{label}] shape={M.shape}  nnz={nnz_total}  p̂={p_hat:.6f}")
+    # print(f"  shots S={S}: empty_fraction={frac_empty:.3f} (target ~ exp(-E*R*2*p))")
+    # print(f"  counts: X={cntX}, Z={cntZ}, Y={cntY}")
 
     # quick examples
     if show_examples > 0 and nnz_total > 0:
@@ -156,7 +156,7 @@ def measure_m2_mask_stats(M, label="M2", show_examples=10):
         idx = np.argwhere(nz)
         for i in range(min(show_examples, idx.shape[0])):
             e, r, q, s = map(int, idx[i])
-            print(f"  example[{i}]: gate={e}, round={r}, q={q}, shot={s}, code={int(M[e, r, q, s])}")
+            # print(f"  example[{i}]: gate={e}, round={r}, q={q}, shot={s}, code={int(M[e, r, q, s])}")
 
     return {
         "shape": (E, R, Q, S),

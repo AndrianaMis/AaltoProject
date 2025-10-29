@@ -4,7 +4,7 @@ import numpy as np
 from surface_code.marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
 from surface_code.stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_stats, summarize_episode
 from surface_code.inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
-from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs, split_DET_by_round, get_syndrome_sequence_from_DET, logical_error_rate, decode_action_index, encode_obs
+from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs,split_DET_by_round, logical_error_rate, decode_action_index, encode_obs, set_group_lr
 from surface_code.M1 import mask_generator_M1
 from surface_code.M2 import mask_generator_M2
 from visuals.corrs import make_Crr_heatmaps
@@ -19,7 +19,7 @@ from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syn
 from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits, optimize_ppo
 from decoder.reward_functions import step_reward, final_reward
 from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends
-
+import time
 
 
 # Generate the rotated surface code circuit:
@@ -54,9 +54,9 @@ for r in range(rounds):
     for shot in range(shots):
         x_syndromes = res[shot, r, :(stbs//2)]
         z_syndromes = res[shot, r, (stbs//2):]
-        print(f"Shot {shot}, Round {r}:")
-        print("  X stabilizers:", x_syndromes)
-        print("  Z stabilizers:", z_syndromes)
+        # print(f"Shot {shot}, Round {r}:")
+        # print("  X stabilizers:", x_syndromes)
+        # print("  Z stabilizers:", z_syndromes)
 
 print(circuit)
 
@@ -111,48 +111,48 @@ for key in ("t1", "t2", "t3", "t4"):
 
 
 ## I am thinking of generating M_data and M_anchilla and M_CNOT. this way, we will have them ckeared out, so somehow we can combine them at the end 
-cat_counts=[0, 0, 0, 0]
+# cat_counts=[0, 0, 0, 0]
 
-for _ in range(1000):
-    #use the calibrated cfg to generate masks
-    M_data, actives=mask_generator(qubits=len(data_qus), rounds=repeat_body_counts, qubits_ind=data_qus, cfg=cfg_m0, actives_list=True)
-    measure_mask_stats(m=M_data, actives=actives)
-    cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
-# print(f'\nFinal Mask M0:\n{M_data}')
-# print(f'Each category coutns: {cat_counts}')
+# for _ in range(1000):
+#     #use the calibrated cfg to generate masks
+#     M_data, actives=mask_generator(qubits=len(data_qus), rounds=repeat_body_counts, qubits_ind=data_qus, cfg=cfg_m0, actives_list=True)
+#     measure_mask_stats(m=M_data, actives=actives)
+#     cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
 
 
-# M_data=mask_generator(qubits=len(data_qus), rounds=rounds, qubits_ind=data_qus, cfg=cfg_, actives_list=False)
-# M_anch=mask_init(qubits=len(anchs), rounds=rounds)
+
 
 
 
 
 
 #---------------------------------  FlipSIm-------------------------------------------------
+def generate_M0(seed=None , S:int=1024):
+    res = [
+        mask_generator(
+            qubits=len(data_qus),
+            rounds=repeat_body_counts,
+            qubits_ind=data_qus,   # you’re already generating data-only rows
+            cfg=cfg_m0,
+            actives_list=True, 
+            seed=seed
+        )
+        for _ in range(S)
+    ]
 
-S=1024
-res = [
-    mask_generator(
-        qubits=len(data_qus),
-        rounds=repeat_body_counts,
-        qubits_ind=data_qus,   # you’re already generating data-only rows
-        cfg=cfg_m0,
-        actives_list=True
-    )
-    for _ in range(S)
-]
+    # Unpack results
+    Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
+    M_data = np.stack(Ms, axis=-1).astype(np.int8)       # -> shape (D, R, S)
+    actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
 
-# Unpack results
-Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
-M_data = np.stack(Ms, axis=-1).astype(np.int8)       # -> shape (D, R, S)
-actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
-
-print("M_data shape:", M_data.shape)
-print("actives shape:", actives.shape)
+    # print("M_data shape:", M_data.shape)
+    # print("actives shape:", actives.shape)
 
 
-M0_local=make_M_data_local_from_masks(masks=M_data, data_ids=data_qus, rounds=repeat_body_counts )
+    M0_local=make_M_data_local_from_masks(masks=M_data, data_ids=data_qus, rounds=repeat_body_counts )
+    stats = measure_stacked_mask_stats(M0_local, "M_data_local")
+
+    return M0_local  , stats 
 # print(f'M local is of shape: {M_data_local.shape}')
 
 
@@ -176,31 +176,29 @@ M0_local=make_M_data_local_from_masks(masks=M_data, data_ids=data_qus, rounds=re
 
 
 
-#print(f'Lets check ids:\nData: {data_qus}\nAnchillas: {anchs}')  #  (All ok!)
-stats = measure_stacked_mask_stats(M0_local, "M_data_local")
 # sanity vs target p_idle:
-p_idle = 0.005
-print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
+# p_idle = 0.005
+# print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
 
 
-##Check wtf these are and the physics behind them 
-cnt = stats["per_shot_counts"]            # from the meter we made
-print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
-# Fano >> 1 means bursty (correlated); Fano ~ 1 means near-Poisson iid.
+# ##Check wtf these are and the physics behind them 
+# cnt = stats["per_shot_counts"]            # from the meter we made
+# print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+# # Fano >> 1 means bursty (correlated); Fano ~ 1 means near-Poisson iid.
 
-# ## einai entaksei gia twra na xrhsimopoimv chat giati kanw ta statistika klp. Sto montelo kane kai tipota moni sou.
-# #  Den einai na paizoyme me ton kwdika gia ta statistika, marginalization klp
+# # ## einai entaksei gia twra na xrhsimopoimv chat giati kanw ta statistika klp. Sto montelo kane kai tipota moni sou.
+# # #  Den einai na paizoyme me ton kwdika gia ta statistika, marginalization klp
 
 
-names = ("spatial", "temporal", "cluster_ext", "multi_scattered")
-print('\nCategories stats for M0 injection')
-for i, name in enumerate(names):
-    shots_with = int((actives[i] > 0).sum())
-    total = int(actives[i].sum())
-    print(f"{name}: shots_with≥1={shots_with}/{S}  total_events={total}")
-print(f'\n\n')
+# names = ("spatial", "temporal", "cluster_ext", "multi_scattered")
+# print('\nCategories stats for M0 injection')
+# for i, name in enumerate(names):
+#     shots_with = int((actives[i] > 0).sum())
+#     total = int(actives[i].sum())
+#     print(f"{name}: shots_with≥1={shots_with}/{S}  total_events={total}")
+# print(f'\n\n')
 
-print(f'\n --------------------------- end data stats ------------------------------------------\n')
+# print(f'\n --------------------------- end data stats ------------------------------------------\n')
 
 
 
@@ -232,46 +230,49 @@ for key in ("t1", "t2", "t3", "t4"):
 
 
 ## I am thinking of generating M_data and M_anchilla and M_CNOT. this way, we will have them ckeared out, so somehow we can combine them at the end 
-cat_counts=[0, 0, 0, 0]
+# cat_counts=[0, 0, 0, 0]
 
-for _ in range(1000):
-    #use the calibrated cfg to generate masks
-    M_anch, actives=mask_generator_M1(qubits=len(anchs), rounds=repeat_body_counts, qubits_ind=anchs, cfg=cfg_m1, actives_list=True)
-    measure_mask_stats(m=M_anch,  actives=actives)
-    cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
-print(f'Each category coutns: {cat_counts}')
+# for _ in range(1000):
+#     #use the calibrated cfg to generate masks
+#     M_anch, actives=mask_generator_M1(qubits=len(anchs), rounds=repeat_body_counts, qubits_ind=anchs, cfg=cfg_m1, actives_list=True)
+#     measure_mask_stats(m=M_anch,  actives=actives)
+#     cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
+# print(f'Each category coutns: {cat_counts}')
 
 
-M_anch=mask_generator_M1(qubits=len(anchs), rounds=repeat_body_counts, qubits_ind=anchs, cfg=cfg_m1, actives_list=False)
+# M_anch=mask_generator_M1(qubits=len(anchs), rounds=repeat_body_counts, qubits_ind=anchs, cfg=cfg_m1, actives_list=False)
 
 
 
 
 
 #---------------------------------  FlipSIm-------------------------------------------------
+def generate_M1(seed=None, S:int=1024):
+    res = [
+        mask_generator_M1(
+            qubits=len(anchs),
+            rounds=repeat_body_counts,
+            qubits_ind=anchs,   # you’re already generating data-only rows
+            cfg=cfg_m1,
+            actives_list=True, 
+            seed=seed
+        )
+        for _ in range(S)
+    ]
 
-res = [
-    mask_generator_M1(
-        qubits=len(anchs),
-        rounds=repeat_body_counts,
-        qubits_ind=anchs,   # you’re already generating data-only rows
-        cfg=cfg_m1,
-        actives_list=True
-    )
-    for _ in range(S)
-]
+    # Unpack results
+    Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
+    M_anch = np.stack(Ms, axis=-1).astype(np.int8)       # -> shape (D, R, S)
+    actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
 
-# Unpack results
-Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
-M_anch = np.stack(Ms, axis=-1).astype(np.int8)       # -> shape (D, R, S)
-actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
-
-print("M_anch shape:", M_anch.shape)
-print("actives shape:", actives.shape)
+    # print("M_anch shape:", M_anch.shape)
+    # print("actives shape:", actives.shape)
 
 
-M1_local=make_M_anc_local_from_masks(masks=M_anch, anc_ids=anchs, rounds=repeat_body_counts )
+    M1_local=make_M_anc_local_from_masks(masks=M_anch, anc_ids=anchs, rounds=repeat_body_counts )
+    stats = measure_stacked_mask_stats(M1_local, "MANCH_local")
 
+    return M1_local, stats
 
 
 prefix, pre_round, meas_round, anc_ids, repeat_count= extract_round_template(circuit)
@@ -280,29 +281,15 @@ prefix, pre_round, meas_round, anc_ids, repeat_count= extract_round_template(cir
 circ_by_round = [(pre_round, stim.Circuit(), meas_round) for _ in range(rounds)]
 
 round0 = stim.Circuit(); round0 += pre_round; round0 += meas_round
-print_svg(round0, "r0")
-print_svg(circuit, "circuit")
-#print(round0)   #only one form #round 
+# print_svg(round0, "r0")
+# print_svg(circuit, "circuit")
 
 
-# for i, item1 in enumerate(circ_by_round):
-#     print(f'round?{i}:\n ')
-#     for j in circ_by_round[i]:
-
-#         print(f'item :\n{j}\n')
-
-
-
-#print(f'Lets check ids:\nData: {data_qus}\nAnchillas: {anchs}')  #  (All ok!)
-stats = measure_stacked_mask_stats(M1_local, "MANCH_local")
-# sanity vs target p_idle:
-p_idle = 0.005
-print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
 
 
 ##Check wtf these are and the physics behind them 
-cnt = stats["per_shot_counts"]            # from the meter we made
-print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+# cnt = stats["per_shot_counts"]            # from the meter we made
+# print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
 # Fano >> 1 means bursty (correlated); Fano ~ 1 means near-Poisson iid.
 
 ## einai entaksei gia twra na xrhsimopoimv chat giati kanw ta statistika klp. Sto montelo kane kai tipota moni sou.
@@ -311,13 +298,13 @@ print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean(
 
 
 
-print('\nCategories stats for M1 injection')
+# print('\nCategories stats for M1 injection')
 
-for i, name in enumerate(names):
-    shots_with = int((actives[i] > 0).sum())
-    total = int(actives[i].sum())
-    print(f"{name}: shots_with≥1={shots_with}/{S}  total_events={total}")
-print(f'\n\n')
+# for i, name in enumerate(names):
+#     shots_with = int((actives[i] > 0).sum())
+#     total = int(actives[i].sum())
+#     print(f"{name}: shots_with≥1={shots_with}/{S}  total_events={total}")
+# print(f'\n\n')
 
 print(f'\n --------------------------- end anch stats ------------------------------------------\n')
 
@@ -354,54 +341,47 @@ for key in ("t1", "t2", "t3", "t4"):
 
 cat_counts=[0, 0, 0, 0]
 
-for _ in range(1000):
-    #use the calibrated cfg to generate masks
-    M2, actives=mask_generator_M2(gates=cx, rounds=repeat_body_counts,  cfg=cfg_m2, actives_list=True)
-    cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
-print(f'Each category coutns: {cat_counts}\n\n')
+# for _ in range(1000):
+#     #use the calibrated cfg to generate masks
+#     M2, actives=mask_generator_M2(gates=cx, rounds=repeat_body_counts,  cfg=cfg_m2, actives_list=True)
+#     cat_counts=[c+int(b) for c,b in zip(cat_counts, actives)]
+# print(f'Each category coutns: {cat_counts}\n\n')
 
-
-
-E=len(cx)
-M2, actives=mask_generator_M2(gates=cx , rounds=repeat_body_counts, cfg=cfg_m2, actives_list=True)
-
-#print(f'M2: \n{M2[:,:,1]}')
-
-res = [
-    mask_generator_M2(
-        gates=cx,
-        rounds=repeat_body_counts,
-        cfg=cfg_m2,
-        actives_list=True
-    )
-    for _ in range(S)
-]
-
-
-Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
-M2_local = np.stack(Ms, axis=-2).astype(np.int8)    # -> (E,R,S,2)
-print("M2 shape:", M2_local.shape)
-actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
-
-
-print("M_gates shape:", M2_local.shape)
-print("actives shape:", actives.shape)
 
 
 
-stats=measure_m2_mask_stats(M2_local)
-p_idle = 0.005
-print("\n\ntarget p_idle =", p_idle, "  measured p̂ =", stats["p_hat"])
+#print(f'M2: \n{M2[:,:,1]}')
+def generate_M2(seed=None, S:int=1024):
+    res = [
+        mask_generator_M2(
+            gates=cx,
+            rounds=repeat_body_counts,
+            cfg=cfg_m2,
+            actives_list=True,
+            seed=seed
+        )
+        for _ in range(S)
+    ]
 
 
-##Check wtf these are and the physics behind them 
-cnt = stats["per_shot_counts"]            # from the meter we made
-print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+    Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
+    M2_local = np.stack(Ms, axis=-2).astype(np.int8)    # -> (E,R,S,2)
+    actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
 
-print("== M2 sanity ==")
-stats_m2=m2_stats(M2_local)
 
-print(m2_stats(M2_local))
+
+
+    stats=measure_m2_mask_stats(M2_local)
+    return M2_local, stats
+
+# ##Check wtf these are and the physics behind them 
+# cnt = stats["per_shot_counts"]            # from the meter we made
+# print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+
+# print("== M2 sanity ==")
+# stats_m2=m2_stats(M2_local)
+
+# print(m2_stats(M2_local))
 
 
 
@@ -512,45 +492,40 @@ d_in=9
 agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
 # example param groups
 optim_groups = [
-    {'params': agent.backbone.parameters(), 'lr': 3e-4},   # backbone
-    {'params': agent.heads.pi.parameters(),        'lr': 3e-4},   # policy head
-    {'params': agent.heads.v.parameters(),         'lr': 1e-4},   # value head (lower LR)
+    {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
+    {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-4},
+    {"name": "backbone","params": agent.backbone.parameters(),      "lr": 3e-4},
 ]
 
 optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
 total = 0
-for i,g in enumerate(optimizer.param_groups):
-    cnt = sum(p.numel() for p in g['params'])
-    total += cnt
-    print(f"group{i}: lr={g['lr']} n_params={len(g['params'])} elems={cnt}")
-print("sum elems in optimizer:", total)
+# for i,g in enumerate(optimizer.param_groups):
+#     cnt = sum(p.numel() for p in g['params'])
+#     total += cnt
+#     print(f"group{i}: lr={g['lr']} n_params={len(g['params'])} elems={cnt}")
 
 
 all_qids = list(data_qus) + list(anchs)
 Q_total = max([0] + all_qids)
-B = S  # shots in parallel
+B = 1024  # shots in parallel
+S=1024
 mode="discrete"
 lers=[]
-episodes=10
+episodes=15
 pos_frac=[]
 neg_frac=[]
 done_mask=torch.tensor(1.0)
+base_seed = 1234
 for ep in range(episodes):
-    if ep==0: 
-        print("== requires_grad on backbone ==")
-        for n,p in agent.backbone.named_parameters():
-            print(n, p.requires_grad)
-
-        print("\n== optimizer param groups ==")
-        total = 0
-        for i,g in enumerate(optimizer.param_groups):
-            cnt = sum(p.numel() for p in g['params'])
-            total += cnt
-            print(f"group{i}: lr={g['lr']} n_params={len(g['params'])} elems={cnt}")
-        print("sum elems in optimizer:", total)
-        print("sum elems in agent:", sum(p.numel() for p in agent.parameters()))
+    start=time.time()
+    print(f'\n[Episode {ep}]')
+    #just a check for the paramters adn the grads   
+    rng_seed = base_seed + ep
 
     # --- episode init ---
+    M0_local, stats_M0=generate_M0(seed=rng_seed)
+    M1_local, stats_M1=generate_M1(seed=rng_seed)
+    M2_local, stats_M2=generate_M2(seed=rng_seed)
     obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
     obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
     agent.begin_episode(B, device=device)
@@ -582,6 +557,9 @@ for ep in range(episodes):
         a_t, logp_t = sample_from_logits(logits, mode=mode)       # MultiDiscrete or Discrete policy
         a_t_cpu = a_t.detach().cpu()  #should be of size 2*d without zeros? 
         logp_t_cpu = logp_t.detach().cpu()
+
+        logp_t    = logp_t.detach()          # <- detach
+        V_t       = V_t.detach() 
         action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)  #make action mask ready for injecton with flipsim
 
 
@@ -633,8 +611,9 @@ for ep in range(episodes):
         # (optional) clip tiny range first days
         r_step_tensor = torch.clamp(r_step_tensor, -1.0, 1.0)
 
-        if ep==episodes:
-            done_mask=torch.tensor(0)
+        done_bool = (t == env.R - 1)          # shape: scalar bool
+        done_mask = torch.zeros(B, device=device) if done_bool else torch.ones(B, device=device)
+
         buf.add(obs_t=feature_vector,action_t=a_t, logp_t=logp_t, value_t=V_t, reward_t=r_step_tensor, mask_t=done_mask)
 
     # episode end
@@ -659,18 +638,38 @@ for ep in range(episodes):
     lers.append(ler)
     #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
     stats = optimize_ppo(agent, buf, optimizer,
-                     clip_eps=0.2, epochs=4, batch_size=8192,
-                     value_coef=0.5, entropy_coef=0.01)
+                     clip_eps=0.2, epochs=6, batch_size=1024,
+                    entropy_coef=1e-3, entropy_coef_min=1e-4,
+                    update_idx=ep, total_updates=episodes)
 
     # take mean across rounds in this episode
     pos_frac.append(np.mean(pos_frac_ep))
     neg_frac.append(np.mean(neg_frac_ep))
-    print(f"\n[Episode {ep}] LER={logical_error_rate(B, obs_final):.4f} "
+    print(f"LER={logical_error_rate(B, obs_final):.4f} "
           f"mean step reward={torch.mean(buf._advs):.4f}")
     print("ADVS stats:", torch.isnan(advs).sum().item(), advs.min().item(), advs.max().item(), advs.std().item())
     print("RETS stats:", torch.isnan(rets).sum().item(), rets.min().item(), rets.max().item(), rets.std().item())
 
-    print(f"PPO: pi={stats['loss_pi']:.3f} v={stats['loss_v']:.3f} H={stats['entropy']:.3f} KL={stats['kl']:.4f}")
+    s = stats
+    print(f"PPO: pi={s['loss_pi']:.3f} v={s['loss_v']:.3f} "
+        f"H={s['entropy']:.3f} KL={s['kl']:.4f} "
+        f"clip={s['clip_frac']:.2f} EV={s['ev']:.3f} "
+        f"| grad={s['grad_norm']:.2f} logitσ={s['logits_std']:.3f} "
+        f"ent_coef={s['entropy_coef_used']:.1e}")
+    mean_corr_per_shot = (stats_act["X"] + stats_act["Z"]) / (B * env.R)
+    print(f"corr/shot={mean_corr_per_shot:.3f} (X={stats_act['X']}, Z={stats_act['Z']})")
+    kl = s["kl"]
+    if kl is not None:
+        if kl > 0.035:
+            new_lr = set_group_lr(optimizer, "actor", factor=0.9)
+            if new_lr is not None:
+                print(f"[tune] KL={kl:.4f} > 0.035 → actor lr ↓ to {new_lr:.2e}")
+        elif kl < 0.010:
+            new_lr = set_group_lr(optimizer, "actor", factor=1.1)
+            if new_lr is not None:
+                print(f"[tune] KL={kl:.4f} < 0.010 → actor lr ↑ to {new_lr:.2e}")
+
+
 
 
 
@@ -682,12 +681,6 @@ for ep in range(episodes):
 # analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
 # plot_LERvsSTEPS(lers)
 # plot_step_reward_trends(pos_frac, neg_frac)
-
-
-
-
-dev=next(agent.parameters()).device
-print(f'Device used: {dev}')
 
 
 
@@ -709,7 +702,6 @@ list_with_syndromes_per_round=[]
 #     dets_round=det_for_round(SxRxD, r)
 #     list_with_syndromes_per_round.append(dets_round)
 #     print(f'\tr={r} -> {dets_round}')
-print(f'\nLogical error rate: {logical_error_rate(S, obs_final)}')
 
 
 

@@ -135,3 +135,17 @@ critic is exploding (critics output v_t <0)
 ## 15/10/25
 
 fixed the exploding v_t. Parameters for the optimizer are now ok! All of the mamba parameters pass through. 
+
+## 28/10/25
+
+fixed actor not learning, changed ppo_optimization to not explode when some of the logits are none,
+fixed GPU memory issues, added masks regenretion in each episode. 
+
+## 29/10/25:
+must do rest of the week
+-add seed in mask generation
+-make a mask kset to evaluate
+-fix step reward function because now its way too small
+
+Fixed metrics for PPO , inifinite logits and too many corrections, fixed action masks actually injecting. 
+LER is decreasing!! Actor/Critic both learning (KL is in the range 0.01,0.03) EV increasing

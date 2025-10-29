@@ -11,6 +11,8 @@ from decoder.decoder_helpers import StimDecoderEnv
 # print(y.shape)
 
 import torch.nn as nn
+import torch.utils.checkpoint as cp  # NEW
+
 #x = torch.randn(batch, length, dim).to("cuda") #the thing from the repo
 #so we give (shots,rounds, dets )
 
@@ -18,11 +20,13 @@ import torch.nn as nn
 
 
 class MambaBackbone(nn.Module):
-    def __init__(self, d_in=8, d_model=256, depth=4):   #d_in=obs size, d_model=latent state size, depth=stacked mamba layerss
+    def __init__(self, d_in=8, d_model=256, depth=4, use_checkpoint=True):   #d_in=obs size, d_model=latent state size, depth=stacked mamba layerss
         super().__init__()
         self.in_proj = nn.Linear(d_in, d_model) #project 
         self.layers  = nn.ModuleList([Mamba(d_model=d_model, layer_idx=i) for i in range(depth)]) #process through mamba layers
         self.norm    = nn.LayerNorm(d_model) #normalize
+        self.use_checkpoint = use_checkpoint
+
     
     def allocate_cache(self, B):  #technique to create cache with size B=#shots
         # one cache (conv_state, ssm_state) per layer
@@ -56,7 +60,7 @@ class PolicyValue(nn.Module):
         logits = self.pi(h_t) #policy logitgs
         
         #value  = self.v(h_t).squeeze(-1)#state val
-        value = torch.tanh(self.v(h_t)).squeeze(-1)
+        value  = self.v(h_t).squeeze(-1)        # ← remove tanh
 
         return logits, value
 
@@ -71,6 +75,9 @@ class DecoderAgent(nn.Module):
         self.Kalman=None    #only for now 
         self.heads    = PolicyValue(d_model, n_actions)
 
+        self.cache = None
+    # NEW: clear caches between PPO minibatches to reduce memory pressure
+    def clear_cache(self):
         self.cache = None
 
 
@@ -334,44 +341,52 @@ def action_to_masks(
 
 # --- Sampling helpers ---------------------------------------------------------
 import torch.nn.functional as F
+from torch.distributions import Categorical
+
+def _sanitize_logits(x: torch.Tensor) -> torch.Tensor:
+    # Work in float32 for numerical stability (avoid bf16/fp16 softmax pathologies)
+    x = x.float()
+    # Replace NaN/±inf with large finite numbers, then clamp
+    x = torch.nan_to_num(x, neginf=-1e9, posinf=1e9)
+    x = torch.clamp(x, min=-1e9, max=1e9)
+
+    # If an entire row was non-finite (now all -1e9), make it uniform (all zeros logits).
+    # Detect rows that are effectively "all masked": max very negative and variance ~0
+    row_bad = (x.max(dim=-1, keepdim=True).values < -1e8) | (x.var(dim=-1, keepdim=True) == 0)
+    x = torch.where(row_bad, torch.zeros_like(x), x)
+    return x
 
 def sample_from_logits(logits: torch.Tensor, mode: str):
     """
     mode:
-      - 'discrete'         : logits shape (B, A) 2d+1
-      - 'multidiscrete'    : logits shape (B, D, C)  (per-qubit categorical)
+      - 'discrete'      : logits (B, A)
+      - 'multidiscrete' : logits (B, D, C)
     Returns:
-      actions, logp
-      - discrete: actions shape (B,)
-      - multidiscrete: actions shape (B, D) and logp is sum of per-dim logp (B,)
+      actions, logp   | (B,), (B,)   or   (B, D), (B,)
     """
     if mode == "discrete":
-        # (B,A)
-        probs = F.softmax(logits, dim=-1)
-        dist  = torch.distributions.Categorical(probs=probs)
-        a = dist.sample()                   # (B,)
-        logp = dist.log_prob(a)             # (B,)
+        lg = _sanitize_logits(logits)
+        dist = Categorical(logits=lg, validate_args=False)  # skip strict Real() checks after sanitization
+        a    = dist.sample()
+        logp = dist.log_prob(a)
         return a, logp
 
     elif mode == "multidiscrete":
-        # (B,D,C)
         B, D, C = logits.shape
-        probs = F.softmax(logits, dim=-1)
-        # Sample per qubit independently
+        lg = _sanitize_logits(logits)
         a_list, lp_list = [], []
         for d in range(D):
-            dist = torch.distributions.Categorical(probs=probs[:, d, :])
-            a_d  = dist.sample()            # (B,)
-            lp_d = dist.log_prob(a_d)       # (B,)
+            dist = Categorical(logits=lg[:, d, :], validate_args=False)
+            a_d  = dist.sample()
+            lp_d = dist.log_prob(a_d)
             a_list.append(a_d)
             lp_list.append(lp_d)
-        actions = torch.stack(a_list, dim=1)         # (B,D)
-        logp    = torch.stack(lp_list, dim=1).sum(-1) # sum over D -> (B,)
+        actions = torch.stack(a_list, dim=1)          # (B, D)
+        logp    = torch.stack(lp_list, dim=1).sum(-1) # (B,)
         return actions, logp
 
     else:
         raise ValueError("mode must be 'discrete' or 'multidiscrete'")
-
 
 
 
@@ -387,106 +402,138 @@ def _entropy_from_logits(logits: torch.Tensor) -> torch.Tensor:
     dist = Categorical(logits=logits)
     return dist.entropy()  # (N,)
 
+
+
+
+
 def optimize_ppo(
     agent,
-    buf,                              # RolloutBuffer after .finalize()
+    buf,
     optimizer: torch.optim.Optimizer,
     *,
     clip_eps: float = 0.2,
-    epochs: int = 4,
-    batch_size: int = 8192,
+    epochs: int = 6,
+    batch_size: int = 1024,
     value_coef: float = 0.5,
-    entropy_coef: float = 0.01,
+    entropy_coef: float = 1e-3,
     max_grad_norm: float = 1.0,
+    # --- optional anneal inputs ---
+    update_idx: int | None = None,
+    total_updates: int | None = None,
+    entropy_coef_min: float = 1e-4,
+    kl_stop: float = 0.03,              # NEW: early-stop threshold per epoch
 ):
-    """
-    PPO update using time×batch flattened minibatches from your RolloutBuffer.
+    import math
+    import torch
+    import torch.nn.functional as F
 
-    Expects buf.finalize(...) already called, so buf has:
-      buf._obs   : (T,B,d_in)
-      buf._actions : (T,B)          # Discrete (class ids)
-      buf._logp  : (T,B)
-      buf._advs  : (T,B)
-      buf._rets  : (T,B)
-    """
     device = next(agent.parameters()).device
-    # convenience views (flatten time×batch)
-    def flat(x): return x.reshape(-1, *x.shape[2:]) if x.ndim > 2 else x.reshape(-1)
 
-    obs_all     = buf._obs.to(device)        # (T,B,d_in)
+    # cosine-annealed entropy coeff (episode/update-wise)
+    if (update_idx is not None) and (total_updates is not None) and total_updates > 0:
+        cos_w = 0.5 * (1.0 + math.cos(math.pi * min(update_idx, total_updates) / total_updates))
+        entropy_coef_t = entropy_coef_min + (entropy_coef - entropy_coef_min) * cos_w
+    else:
+        entropy_coef_t = entropy_coef
 
-    acts_all    = buf._actions.to(device)    # (T,B)
-    old_logp_all= buf._logp.to(device)       # (T,B)
-    advs_all    = buf._advs.to(device)       # (T,B)
-    rets_all    = buf._rets.to(device)       # (T,B)
-    values_all  = buf._values.to(device)     # (T,B) (only for logging if you want)
+    stats = {
+        "loss_pi": 0.0, "loss_v": 0.0, "entropy": 0.0, "kl": 0.0,
+        "clip_frac": 0.0, "ev": 0.0, "grad_norm": 0.0, "logits_std": 0.0,
+        "count": 0,
+    }
 
-    N_total = obs_all.shape[0] * obs_all.shape[1]
-
-    # training loop
-    stats = {"loss_pi": 0.0, "loss_v": 0.0, "entropy": 0.0, "kl": 0.0, "count": 0}
+    # hard assert: params must be finite
+    for p in agent.parameters():
+        if not torch.isfinite(p).all():
+            print("[fatal] non-finite param detected before PPO step")
+            raise SystemExit
 
     for _ in range(epochs):
-        for mb in buf.iter_minibatches(batch_size=batch_size, shuffle=True):
-          #  print(f'mb:{mb}')
-            obs   = mb["obs"].to(device)       # (n, d_in)
-            acts  = mb["actions"].to(device)   # (n,)
-            oldlp = mb["logp"].to(device)      # (n,)
-            adv   = mb["advs"].to(device)      # (n,)
-            rets  = mb["rets"].to(device)      # (n,)
+        epoch_stopped = False
+        for mb_idx, mb in enumerate(buf.iter_minibatches(batch_size=batch_size, shuffle=True)):
+            obs   = mb["obs"].to(device)      # (n, d_in)
+            acts  = mb["actions"].to(device)  # (n,)
+            oldlp = mb["logp"].to(device)     # (n,)
+            adv   = mb["advs"].to(device)     # (n,)
+            rets  = mb["rets"].to(device)     # (n,)
 
-            # Re-forward policy/value for the minibatch.
-            # Since the backbone is step-based (Mamba), allocate a fresh cache for this minibatch.
+            # Guards: observations must be finite
+            if not torch.isfinite(obs).all():
+                nbad = (~torch.isfinite(obs)).sum().item()
+                print(f"[warn] non-finite OBS in minibatch {mb_idx}: {nbad} elements; skipping")
+                continue
+
+            # fresh recurrent cache for this minibatch
             agent.begin_episode(B=obs.shape[0], device=device)
-            logits, v_pred, _ = agent.act_opt(obs)          # logits:(n,A), v_pred:(n,)
+            logits, v_pred, _ = agent.act_opt(obs)  # (n,A), (n,)
 
-            #print("Grad enabled?", logits.requires_grad, v_pred.requires_grad)    we do get True True
+            # Guard: logits must be finite
+            if not torch.isfinite(logits).all():
+                nbad = (~torch.isfinite(logits)).sum().item()
+                print(f"[warn] non-finite LOGITS in minibatch {mb_idx}: {nbad}; skipping")
+                if hasattr(agent, "clear_cache"): agent.clear_cache()
+                continue
 
-            # New log-prob of taken actions
-            logp = Categorical(logits=logits).log_prob(acts)   # (n,)
-            entropy = _entropy_from_logits(logits)             # (n,)
+            # Build distribution and compute losses
+            dist    = torch.distributions.Categorical(logits=logits)
+            logp    = dist.log_prob(acts.long())
+            entropy = dist.entropy()                           # (n,)
+            ratio   = (logp - oldlp).exp()
 
-            # PPO ratio
-            ratio = (logp - oldlp).exp()                       # (n,)
-
-            # Clipped surrogate policy loss
             unclipped = ratio * adv
             clipped   = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv
             loss_pi   = -torch.min(unclipped, clipped).mean()
 
-            # Value loss
-            loss_v = F.mse_loss(v_pred, rets)
+            loss_v    = F.mse_loss(v_pred, rets)
 
-            # Entropy bonus
-            # 5) Entropy bonus (maximize entropy → subtract in loss)
-
-            ent = entropy.mean()
-
-            loss = loss_pi + value_coef * loss_v - entropy_coef * ent
-#            print("V_t mean:", v_pred.mean().item(), "std:", v_pred.std().item())
+            ent       = entropy.mean()
+            loss      = loss_pi + value_coef * loss_v - entropy_coef_t * ent
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
-            # for name, param in agent.named_parameters():
-            #     if param.grad is not None:
-            #         print(name, "grad mean:", param.grad.mean().item(), "std:", param.grad.std().item())
-            #     else:
-            #         print(name, "grad is None")
 
-            torch.nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
+            # guard grads
+            for p in agent.parameters():
+                if p.grad is not None:
+                    torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+            grad_norm = torch.nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
             optimizer.step()
 
-            # Diagnostics (approx KL = E[oldlp - newlp])
-            approx_kl = (oldlp - logp).mean().clamp_min(0.0).item()
-            stats["loss_pi"] += loss_pi.item()
-            stats["loss_v"]  += loss_v.item()
-            stats["entropy"] += ent.item()
-            stats["kl"]      += approx_kl
-            stats["count"]   += 1
+            if hasattr(agent, "clear_cache"):
+                agent.clear_cache()
 
-    # average stats
+            # Diagnostics (compute BEFORE potential early-stop, and count this mb)
+            with torch.no_grad():
+                approx_kl = (oldlp - logp).mean().clamp_min(0.0).item()
+                clip_frac = ((ratio > 1.0 + clip_eps) | (ratio < 1.0 - clip_eps)).float().mean().item()
+
+                var_returns = rets.var(unbiased=False)
+                ev = (1.0 - ((rets - v_pred).var(unbiased=False) / (var_returns + 1e-8))).item() if var_returns > 0 else 0.0
+
+                stats["loss_pi"]   += loss_pi.item()
+                stats["loss_v"]    += loss_v.item()
+                stats["entropy"]   += ent.item()
+                stats["kl"]        += approx_kl
+                stats["clip_frac"] += clip_frac
+                stats["ev"]        += ev
+                stats["grad_norm"] += float(grad_norm)
+                stats["logits_std"]+= logits.float().std().item()
+                stats["count"]     += 1
+
+            # Early-stop if KL is large (after counting this minibatch)
+            if approx_kl > kl_stop:
+                epoch_stopped = True
+                break
+
+        if epoch_stopped:
+            break
+
     if stats["count"] > 0:
-        for k in ("loss_pi","loss_v","entropy","kl"):
+        for k in ("loss_pi","loss_v","entropy","kl","clip_frac","ev","grad_norm","logits_std"):
             stats[k] /= stats["count"]
+    else:
+        print("[warn] PPO update skipped: no valid minibatches")
+
+    stats["entropy_coef_used"] = entropy_coef_t
     return stats
-    

@@ -22,14 +22,16 @@ def m2_t1_same_round_bursts(
     burst_gates_max: int = 6,
     pX: float = 0.5,
     pZ: float = 0.5,
-    rng: Optional[np.random.Generator] = None
+    rng: Optional[np.random.Generator] = None,
+    rng_seed=None
+
 ):
     """
     t1: SAME-ROUND multi-gate bursts (crosstalk).
     - With prob p_start per round, pick K gates in that round and apply a Pauli pair to each.
     - K ~ Uniform[burst_gates_min, burst_gates_max].
     """
-    if rng is None: rng = np.random.default_rng()
+    if rng is None: rng = np.random.default_rng(rng_seed)
     events = []  # list of (r, gate_indices, [(c0,c1)...])
     #print(f'------------------ #1 Injecting spatial cluster correlations with p_start: {p_start} -------------------------------\n\n')
     for r in range(R):
@@ -66,14 +68,15 @@ def m2_t2_per_gate_streaks(
     max_len: Optional[int] = None,
     pX: float = 0.5,
     pZ: float = 0.5,
-    rng: Optional[np.random.Generator] = None
+    rng: Optional[np.random.Generator] = None,
+    rng_seed=None
 ):
     """
     t2: PER-GATE temporal streaks (primary for class-2).
     - For each gate e, try to start a streak at free rounds with prob p_start.
     - Pick one Pauli pair and extend for L ~ Geometric(gamma).
     """
-    if rng is None: rng = np.random.default_rng()
+    if rng is None: rng = np.random.default_rng(rng_seed)
     streaks = []  # list of (e, r_start, L_eff, (c0,c1))
  #   print(f'------------------ #2 Injecting Temporal one-qubit correlations with p_start: {p_start}-------------------------------\n\n')
 
@@ -120,6 +123,7 @@ def m2_t3_cluster_ext(
     pX: float = 0.5,
     pZ: float = 0.5,
     rng: np.random.Generator | None = None,
+    rng_seed=None
 ):
     """
     Extends *gate groups* across subsequent rounds. If t1_events is provided, we
@@ -130,7 +134,7 @@ def m2_t3_cluster_ext(
     Writes onto m in-place and returns (m, events), where events are tuples:
       (seed_round, gate_indices, rounds_extended (list), pair_applied)
     """
-    if rng is None: rng = np.random.default_rng()
+    if rng is None: rng = np.random.default_rng(rng_seed)
     events = []
 
     def _compose(a:int, b:int)->int:
@@ -193,13 +197,14 @@ def m2_t4_multi_gate_multi_round_scattered(
     pX: float = 0.5,
     pZ: float = 0.5,
     rng: np.random.Generator | None = None,
+    rng_seed=None
 ):
     """
     Seeds rare scattered clusters: choose a group of gates and a non-contiguous
     set of rounds (heavy-tail over gaps). Apply (possibly the same) Pauli pair
     to all chosen gates at those rounds.
     """
-    if rng is None: rng = np.random.default_rng()
+    if rng is None: rng = np.random.default_rng(rng_seed)
     events = []
 
     def _compose(a:int, b:int)->int:
@@ -283,7 +288,7 @@ def sample_pauli_code(rng: np.random.Generator, pX: float, pZ: float) -> int:
     return choice
     
 
-def mask_generator_M2(gates: list[tuple[int,int]], rounds:int, cfg, actives_list: bool=False):
+def mask_generator_M2(gates: list[tuple[int,int]], rounds:int, cfg, actives_list: bool=False, seed=None):
     """
     gates: list of (control, target) qubit indices (data, anc)
     returns M2 mask of shape (E, R, S, 2) with Pauli codes
@@ -294,9 +299,8 @@ def mask_generator_M2(gates: list[tuple[int,int]], rounds:int, cfg, actives_list
     c2=False
     c3=False
     c4=False
-    rng = np.random.default_rng()
     if cfg["t1"]["enabled"]:
-        M2, clusters= m2_t1_same_round_bursts(m=M2, E=len(gates), R=rounds, p_start= cfg["t1"]["p_start"] )
+        M2, clusters= m2_t1_same_round_bursts(m=M2, E=len(gates), R=rounds, p_start= cfg["t1"]["p_start"] , rng_seed=seed)
         # print('\n')
         # for event in clusters:
 
@@ -306,7 +310,7 @@ def mask_generator_M2(gates: list[tuple[int,int]], rounds:int, cfg, actives_list
             c1=True
    
     if cfg["t2"]["enabled"]:
-        M2, streaks= m2_t2_per_gate_streaks(m=M2, E=E, R=rounds, p_start=cfg["t2"]["p_start"])
+        M2, streaks= m2_t2_per_gate_streaks(m=M2, E=E, R=rounds, p_start=cfg["t2"]["p_start"], rng_seed=seed)
         # print('\n')
         # for streak in streaks:
         #    print(f'Event---Streak: {streak}')
@@ -315,10 +319,10 @@ def mask_generator_M2(gates: list[tuple[int,int]], rounds:int, cfg, actives_list
             c2=True
     if cfg["t3"]["enabled"]:
         if not c1:
-            M2, clusters= m2_t1_same_round_bursts(m=M2, E=len(gates), R=rounds, p_start= cfg["t1"]["p_start"] )
+            M2, clusters= m2_t1_same_round_bursts(m=M2, E=len(gates), R=rounds, p_start= cfg["t1"]["p_start"] , rng_seed=seed)
             c1=c1 or len(clusters)>0
         if c1:
-            M2, streaks3=m2_t3_cluster_ext(m=M2, E=len(gates), clusters=clusters, R=rounds, p_start=cfg["t3"]["p_start"])     #< print("greeks are very racist")
+            M2, streaks3=m2_t3_cluster_ext(m=M2, E=len(gates), clusters=clusters, R=rounds, p_start=cfg["t3"]["p_start"], rng_seed=seed)     #< print("greeks are very racist")
             # print(f'{len(clusters)} clusters\n')
             # for st in streaks3:
             #     r,gate, rs, pairs=st

@@ -43,6 +43,7 @@ def spatial_clusters(
     pr_to_neigh: float = 0.3,         # prob to include each neighbor
     fY: float = 0.05,                 # M1: prob of choosing Y (else X)
     rng: np.random.Generator | None = None,
+    rng_seed=None
 ) -> tuple[np.ndarray, List[Tuple[int, np.ndarray, int]]]:
     """
     M1 (ancilla SPAM, Z-basis MR):
@@ -50,7 +51,7 @@ def spatial_clusters(
       - Writes only into empties in round t (as before).
     """
     if rng is None:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(rng_seed)
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
 
     events: List[Tuple[int, np.ndarray, int]] = []
@@ -156,9 +157,10 @@ def temporal_streaks_single_qubit(
     max_len: Optional[int] = None,
     fY: float = 0.05,                           # << add
     rng: np.random.Generator | None = None,
+    rng_seed=None
 ) -> tuple[np.ndarray, List[Tuple[int, int, int, int]]]:
     if rng is None:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(rng_seed)
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
 
     streaks: List[Tuple[int, int, int, int]] = []
@@ -212,13 +214,14 @@ def extend_clusters(
     gamma: float = 0.6  ,
     pX=0.5,
     rng: np.random.Generator | None = None,
+    rng_seed=None,
     max_len: Optional[int] = None,
     fY: float = 0.05,                 # M1: prob of choosing Y (else X)
 
      )-> tuple[np.ndarray, List[Tuple[List[Tuple[int, np.ndarray]], int, int]]]:
     
     if rng is None:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(rng_seed)
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
     streaks: List[Tuple[List[Tuple[int, np.ndarray]], int, int]] = []    #[(cluster), length, -2]
     #print(f'------------------  #3 Extending Clusters correlations with p_start: {p_start} -------------------------------\n\n')
@@ -282,6 +285,7 @@ def multi_qubit_multi_round2(
     pX: float = 0.5,                    # draw X or Z only; Y arises via overlap
     disjoint_qubit_groups: bool = False, # if True, a qubit is used by at most one event
     rng: Optional[np.random.Generator] = None,
+    rng_seed=None,
     decay_model: str = "power",       # for scattered: "uniform" | "power" 
     decay_n: float = 2.0,             # n in 1/Δt^n or e^{-nΔt}
     decay_A: float = 1.0,             # global weight scale (usually fine at 1.0)
@@ -305,7 +309,7 @@ def multi_qubit_multi_round2(
       (updated_mask, events) where each event is (Q, t0, L_eff, P).
     """
     if rng is None:
-        rng = np.random.default_rng()
+        rng = np.random.default_rng(rng_seed)
     assert m.shape == (qus, rounds)
 
     if qset_max is None:
@@ -455,7 +459,7 @@ def multi_qubit_multi_round2(
 
 # Each qubit in each round should experience at most one error event. 
 # The error types are exclusive: if a location is designated to have a Y error, then only a Y error is injected there (not an X and Y together, for example). 
-def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_list:bool=False):
+def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_list:bool=False, seed=None):
     m = mask_init(qubits=qubits, rounds=rounds)
     fY = cfg.get("M1_pauli", {}).get("fY", 0.05)
 
@@ -464,7 +468,7 @@ def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_lis
             m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind,
             p_start=cfg["t1"]["p_start"], wrap=cfg["t1"]["wrap"],
             rad=cfg["t1"]["rad"], pr_to_neigh=cfg["t1"]["pr_to_neigh"],
-            fY=fY                                    # << pass fY
+            fY=fY, rng_seed=seed                                    # << pass fY
         )
         c1 = len(clusters) > 0
     else:
@@ -474,7 +478,7 @@ def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_lis
         m, streaks2 = temporal_streaks_single_qubit(
             m=m, qus=qubits, rounds=rounds,
             p_start=cfg["t2"]["p_start"], gamma=cfg["t2"]["gamma"],
-            fY=fY                                     # << pass fY
+            fY=fY, rng_seed=seed                                      # << pass fY
         )
         c2 = len(streaks2) > 0
     else:
@@ -486,13 +490,13 @@ def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_lis
                 m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind,
                 p_start=cfg["t1"]["p_start"], wrap=cfg["t1"]["wrap"],
                 rad=cfg["t1"]["rad"], pr_to_neigh=cfg["t1"]["pr_to_neigh"],
-                fY=fY
+                fY=fY, rng_seed=seed 
             )
             c1 = c1 or (len(clusters) > 0)
         m, streaks3 = extend_clusters(
             m=m, rounds=rounds, qus=qubits, clusters=clusters,
             p_start=cfg["t3"]["p_start"], gamma=cfg["t3"]["gamma"],
-            fY=fY                                      # << pass fY (optional)
+            fY=fY , rng_seed=seed                                      # << pass fY (optional)
         )
         c3 = len(streaks3) > 0
     else:
@@ -504,7 +508,7 @@ def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_lis
             p_start=cfg["t4"]["p_start"], gamma=cfg["t4"]["gamma"],
             qset_min=cfg["t4"]["qset_min"], qset_max=cfg["t4"]["qset_max"],
             disjoint_qubit_groups=cfg["t4"]["disjoint_qubit_groups"],
-            fY=fY                                      # << pass fY
+            fY=fY , rng_seed=seed                                      # << pass fY
         )
         c4 = len(events4) > 0
     else:
