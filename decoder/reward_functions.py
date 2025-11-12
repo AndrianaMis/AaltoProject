@@ -54,6 +54,61 @@
 
 #     r = reward_clear + reward_step
 #     return r.squeeze() # Return shape (S,)
+def round_overcorr_metrics_multidiscrete(det_prev, det_now, det_next, nx, nz, k_budget=1):
+    det_prev = np.asarray(det_prev).reshape(-1)
+    det_now  = np.asarray(det_now ).reshape(-1)
+    det_next = np.asarray(det_next).reshape(-1)
+    nx = np.asarray(nx).reshape(-1).astype(np.int32)
+    nz = np.asarray(nz).reshape(-1).astype(np.int32)
+    flips = nx + nz
+    act_t = flips > 0
+
+    idle_rate        = (act_t & (det_now == 0)).mean()
+    improved         = det_next < det_now
+    no_improve_rate  = (act_t & (~improved)).mean()
+    acted_rate       = act_t.mean()
+    eff_act          = (improved & act_t).sum() / max(1, act_t.sum())
+    excess_flips     = np.maximum(flips - int(k_budget), 0).mean()
+
+    return dict(
+        act_rate=float(acted_rate),
+        idle_rate=float(idle_rate),
+        no_improve_rate=float(no_improve_rate),
+        eff_act=float(eff_act),
+        mean_flips=float(flips.mean()),
+        mean_excess_flips=float(excess_flips),
+    )
+
+
+
+
+
+
+
+
+
+
+def round_overcorr_metrics_discrete(det_prev, det_now, nx, nz):
+    """
+    det_prev, det_now: (S,) detector counts
+    nx,nz: (S,) in {0,1} for this round
+    """
+    det_prev = np.asarray(det_prev).reshape(-1)
+    det_now  = np.asarray(det_now ).reshape(-1)
+    act_t    = (np.asarray(nx).reshape(-1) + np.asarray(nz).reshape(-1)) > 0
+
+    acted_rate = act_t.mean()
+    idle_rate  = (act_t & (det_prev == 0)).mean()     # acted when prev round was already clean
+    improved   = det_now < det_prev                   # effect of action in THIS round
+    no_improve = (act_t & (~improved)).mean()
+    eff_act    = (improved & act_t).sum() / max(1, act_t.sum())
+
+    return dict(
+        act_rate=float(acted_rate),
+        idle_rate=float(idle_rate),
+        no_improve_rate=float(no_improve),
+        eff_act=float(eff_act),
+    )
 
 
 
@@ -64,12 +119,22 @@ LAMBDA_FLIP   = 1e-3  # small penalty per flip (start tiny!)
 BUDGET_K      = 1     # allow up to k flips “free-ish” per round
 LAMBDA_EXCESS = 5e-3  # stronger penalty for flips beyond k
 
+
+
+
+# # reward knobs
+# ALPHA_CLEAR   = 0.45   # ↓ a touch (from 0.50)
+# BETA_PENALTY  = 0.08   # ↑ (from 0.05) to value active syndrome more
+# LAMBDA_FLIP   = 0.003  # ↑ per-flip cost (was 1e-3)
+# BUDGET_K      = 0      # important: make any flip count as "excess"
+# LAMBDA_EXCESS = 0.015  # ↑ excess cost (will apply to every flip now)
+
 def step_reward(
-    obs_prev_round,
-    obs_round,
+    obs_prev_round,        # (S, N_det) 0/1 or bool; None for first round
+    obs_round,             # (S, N_det) 0/1 or bool
     *,
-    nx: int = 0,
-    nz: int = 0,
+    nx=0,                  # number of X corrections (scalar or (S,))
+    nz=0,                  # number of Z corrections (scalar or (S,))
     alpha: float = ALPHA_CLEAR,
     beta: float  = BETA_PENALTY,
     lam_flip: float = LAMBDA_FLIP,
@@ -77,33 +142,47 @@ def step_reward(
     lam_excess: float = LAMBDA_EXCESS,
 ):
     """
-    R_step = alpha * (#cleared) - beta * (#active_now)
-             - lam_flip * (#flips) - lam_excess * max(0, #flips - k_budget)
+    R_step(per shot) = alpha * (#cleared) - beta * (#active_now)
+                       - lam_flip * flips - lam_excess * max(0, flips - k_budget)
+
+    Returns: (S,) float32
     """
-    # Active syndrome penalty (S,1)
-    det_fired = obs_round.sum(axis=1, keepdims=True)
-    r_active  = -beta * det_fired
+    # --- cast & shapes ---
+    now  = np.asarray(obs_round, dtype=np.float32)          # (S, N_det)
+    S    = now.shape[0]
+    prev = np.zeros_like(now) if obs_prev_round is None \
+           else np.asarray(obs_prev_round, dtype=np.float32)
 
-    # Cleared bonus (S,1)
-    if obs_prev_round is not None:
-        cleared  = ((obs_prev_round == 1) & (obs_round == 0)).sum(axis=1, keepdims=True)
-        r_clear  = alpha * cleared
-    else:
-        r_clear  = np.zeros_like(r_active)
+    # --- detector counts ---
+    det_now  = now.sum(axis=1)                              # (S,)
+    det_prev = prev.sum(axis=1)                             # (S,)
+    cleared  = np.maximum(det_prev - det_now, 0.0)          # (S,)
 
-    # Flip penalties are per-shot scalars; broadcast to (S,1)
-    n_flips   = nx + nz
-    # per-flip small penalty
-    r_flip    = -lam_flip * n_flips
-    # extra penalty beyond soft budget k
-    excess    = max(0, n_flips - k_budget)
-    r_excess  = -lam_excess * excess
+    # --- flips per shot: accept scalar or (S,) and coerce to (S,) ---
+    def _vec(x):
+        if isinstance(x, (int, float, np.integer, np.floating)):
+            return np.full((S,), float(x), dtype=np.float32)
+        x = np.asarray(x, dtype=np.float32).reshape(-1)
+        if x.size == 1:
+            return np.full((S,), float(x[0]), dtype=np.float32)
+        if x.size != S:
+            # best-effort broadcast/resize
+            x = np.resize(x, (S,)).astype(np.float32)
+        return x
 
-    # Combine; broadcast scalar penalties to all shots this round
-    r = r_clear + r_active + (r_flip + r_excess)
+    nx_v = _vec(nx)                                         # (S,)
+    nz_v = _vec(nz)                                         # (S,)
+    flips = nx_v + nz_v                                     # (S,)
+    excess = np.maximum(flips - float(k_budget), 0.0)       # (S,)
 
-    # Return (S,)
-    return r.squeeze()
+    # --- final reward ---
+    r = (alpha * cleared) \
+        - (beta * det_now) \
+        - (lam_flip * flips) \
+        - (lam_excess * excess)
+
+    return r.astype(np.float32)
+
 
 
 

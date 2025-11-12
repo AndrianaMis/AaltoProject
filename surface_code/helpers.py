@@ -598,3 +598,198 @@ def set_group_lr(optimizer, name, *, factor=None, value=None,
                 g["lr"] = float(min(max(g["lr"] * factor, min_lr), max_lr))
             return g["lr"]  # return new lr
     return None  # group not found
+
+
+
+
+
+
+
+
+
+
+def summary(
+    *,
+    ep: int,
+    buf,
+
+    env,              
+    stats_act: dict,           # {"X": int, "Z": int}
+    s,
+    ler,
+    advs,
+    rets,
+    R,
+    B,
+    # Optional diagnostics (pass if available)
+    dets: np.ndarray = None,   # detector bits, shape (N_det_total, B) or (B, N_det_total)
+    slices: list = None,       # list of (start, end) per-round detector row slices
+    MR: np.ndarray = None,     # ancilla MR bits, shape (A, R, B)
+    all_action_masks: list = None,  # per-round dicts with "X","Z" masks of shape (Q, B)
+):
+
+
+    #Step rowards stats
+    raw_rewards = torch.stack(buf.rewards, dim=0)  # (T, B)
+    raw_step_mean = raw_rewards.mean().item()
+    raw_step_min  = raw_rewards.min().item()
+    raw_step_max  = raw_rewards.max().item()
+    pos_share = (raw_rewards > 0).float().mean().item()
+    neg_share = (raw_rewards < 0).float().mean().item()
+
+    print(f"[ep {ep}] raw step reward: mean={raw_step_mean:.4f}  "
+          f"min={raw_step_min:.4f}  max={raw_step_max:.4f}  "
+          f"pos%={100*pos_share:.1f}  neg%={100*neg_share:.1f}")
+
+
+    print(f"[ep {ep}] LER={ler:.4f}  mean advantage={buf._advs.mean():.4f}")
+    print("ADVS stats:", torch.isnan(advs).sum().item(), advs.min().item(), advs.max().item(), advs.std().item())
+    print("RETS stats:", torch.isnan(rets).sum().item(), rets.min().item(), rets.max().item(), rets.std().item())
+
+    # PPO line
+    print(
+        f"PPO: pi={s['loss_pi']:.3f} v={s['loss_v']:.3f} "
+        f"H={s['entropy']:.3f} KL={s['kl']:.4f} "
+        f"clip={s['clip_frac']:.2f} EV={s['ev']:.3f} "
+        f"| grad={s['grad_norm']:.2f} logitσ={s['logits_std']:.3f} "
+        f"ent_coef={s['entropy_coef_used']:.1e}"
+    )
+
+    # Corrections per shot
+    total_actions = (B * R) if R is not None else max(1, B)  # fallback
+    x_cnt = int(stats_act.get("X", 0))
+    z_cnt = int(stats_act.get("Z", 0))
+    noop = max(0, total_actions - (x_cnt + z_cnt))
+    mean_corr_per_shot = (x_cnt + z_cnt) / max(1, B) / max(1, R or 1)
+    print(f"actions: noop={noop} ({100*noop/max(1,total_actions):.1f}%), "
+          f"X={x_cnt} ({100*x_cnt/max(1,total_actions):.1f}%), "
+          f"Z={z_cnt} ({100*z_cnt/max(1,total_actions):.1f}%)")
+    print(f"corr/shot={mean_corr_per_shot:.3f} (X={x_cnt}, Z={z_cnt})")
+
+
+
+
+
+    def _to_numpy_bool(x):
+        if x is None: return None
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().to(torch.bool).numpy()
+        x = np.asarray(x)
+        return x.astype(bool)
+
+
+
+    # ---------- 6) Extra sanity checks (optional inputs) ----------
+    # 6a) Per-round detector activity (fraction fired)
+    if (dets is not None) and (slices is not None):
+        dets_np = np.asarray(dets)
+        # Accept either shape (N_det_total, B) or (B, N_det_total)
+        if dets_np.shape[0] == B:
+            # (B, N_det_total) -> transpose to (N_det_total, B)
+            dets_np = dets_np.T
+        per_round_det = []
+        for (a, b) in slices:
+            blk = dets_np[a:b, :]  # (n_det_round, B)
+            per_round_det.append(blk.mean())
+        print("detectors per round (mean fired frac):",
+              " ".join(f"{x:.3f}" for x in per_round_det))
+
+         # 2) clear-after-act proxy
+        if (all_action_masks is not None) and (R is not None):
+            L = min(R, len(slices), len(all_action_masks))
+            # det-count per round per shot: (L, B)
+            det_count = np.stack([dets_np[a:b, :].sum(axis=0) for (a, b) in slices[:L]], axis=0)
+
+            def _to_bool_np(x):
+                if x is None: return None
+                if isinstance(x, torch.Tensor): x = x.detach().cpu().numpy()
+                x = np.asarray(x)
+                return x.astype(bool)
+
+            data_ids = getattr(env, "data_ids", None)
+
+            # --- FIX: acted_mask must be (L, B) ---
+            acted_mask = np.zeros((L, B), dtype=bool)
+
+            for t in range(L):
+                am = all_action_masks[t]
+                Xm = _to_bool_np(am.get("X", None))
+                Zm = _to_bool_np(am.get("Z", None))
+                if Xm is None and Zm is None:
+                    continue
+                if Xm is None: Xm = np.zeros_like(Zm)
+                if Zm is None: Zm = np.zeros_like(Xm)
+
+                # normalize to (Q,B)
+                if Xm.ndim == 1: Xm = Xm.reshape(-1, 1)
+                if Zm.ndim == 1: Zm = Zm.reshape(-1, 1)
+
+                # restrict to data qubits if provided
+                if data_ids is not None:
+                    Xm = Xm[data_ids, :]
+                    Zm = Zm[data_ids, :]
+
+                # combined per-shot action flag -> shape (B,)
+                combined = (Xm.any(axis=0) | Zm.any(axis=0))
+                combined = np.asarray(combined, dtype=bool)
+                if combined.ndim == 0:
+                    combined = np.full((B,), bool(combined))
+                elif combined.shape != (B,):
+                    # best-effort reshape if broadcasted weirdly
+                    combined = combined.reshape(-1)[:B]
+                acted_mask[t, :] = combined  # <-- no more broadcasting error
+
+            improved = []
+            for t in range(L - 1):
+                where_acted = acted_mask[t]
+                if where_acted.any():
+                    drop = (det_count[t, where_acted] > det_count[t + 1, where_acted]).mean()
+                    improved.append(drop)
+                else:
+                    improved.append(np.nan)
+    #         print("clear-after-act rate by round:",
+    #               " ".join("nan" if np.isnan(x) else f"{x:.2f}" for x in improved))
+
+    # # 6b) MR flip rate by round
+    # if MR is not None:
+    #     MR_np = np.asarray(MR)
+    #     # Expect (A, R, B). If not, try to permute heuristically.
+    #     if MR_np.ndim == 3 and MR_np.shape[1] == R:
+    #         mr_rate_by_round = MR_np.mean(axis=(0, 2))  # (R,)
+    #         print("MR flip rate per round:",
+    #               " ".join(f"{x:.3f}" for x in mr_rate_by_round))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# export_dataset(circuit=circuit,
+#                M_data_local=M_data_local,
+#                M_anc_local=M_anch_local,
+#                M2_local=M_2,
+#                data_ids=data_qus,
+#                anc_ids=anchs,
+#                gate_pairs=cx,
+#                out_prefix='extracted')
+# # force Z on first data row in round 0 for first 16 shots
+# M_forced = M_data_local.copy()
+# M_forced[:] = 0
+# M_forced[0, 0, :16] = 2  # your codes: X=1, Z=2, Y=3
+# dets_f, _, _ = run_batched_data_only(circuit, M_forced, data_ids=data_qus)
+
+# who = np.where(dets_f.any(axis=1))[0]
+# print("detectors triggered by forced Z (subset):", who[:20])
+
+
+
+

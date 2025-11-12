@@ -4,7 +4,7 @@ import numpy as np
 from surface_code.marginalize import calibrate_start_rates, build_m0_once, cfg_data, cfg_anch, build_m1_once, cfg_m2, build_m2_once, calibrate_start_rates_m2
 from surface_code.stats import measure_mask_stats, measure_stacked_mask_stats, measure_m2_mask_stats, m2_stats, summarize_episode
 from surface_code.inject import  run_batched_data_plus_anc, run_batched_data_anc_plus_m2
-from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs,split_DET_by_round, logical_error_rate, decode_action_index, encode_obs, set_group_lr
+from surface_code.helpers import print_svg, extract_round_template, get_data_and_ancilla_ids_by_parity, make_M_data_local_from_masks, make_M_anc_local_from_masks, extract_template_cx_pairs,split_DET_by_round, logical_error_rate, decode_action_index, encode_obs, set_group_lr, summary
 from surface_code.M1 import mask_generator_M1
 from surface_code.M2 import mask_generator_M2
 from visuals.corrs import make_Crr_heatmaps
@@ -17,7 +17,7 @@ from .helpers import extract_round_template_plus_suffix, does_action_mask_have_a
 import torch
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
 from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits, optimize_ppo
-from decoder.reward_functions import step_reward, final_reward
+from decoder.reward_functions import step_reward, final_reward, round_overcorr_metrics_discrete
 from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends
 import time
 
@@ -544,7 +544,8 @@ for ep in range(episodes):
     feature_vector = torch.from_numpy(feature_vector).to(device)  # (B, 9)
     feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
                     feature_vector.std(dim=0, keepdim=True) + 1e-6)
-
+    nx_rounds=[]
+    nz_rounds=[]
  #   print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
     for t in range(env.R):   # R = 9
 
@@ -559,17 +560,22 @@ for ep in range(episodes):
         logp_t_cpu = logp_t.detach().cpu()
 
         logp_t    = logp_t.detach()          # <- detach
-        V_t       = V_t.detach() 
+        V_t       = V_t.detach()  
         action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)  #make action mask ready for injecton with flipsim
 
 
         gate,qubit =decode_action_index(a=a_t,D=len(data_qus), device=device )
-        # x_mask=action_mask.get('X')
-        # z_mask=action_mask.get('Z')
-        did_act, nx, nz = does_action_mask_have_anything(action_mask)    #check whether these masks have anythign in them:
+        x_mask=action_mask.get('X')
+        z_mask=action_mask.get('Z')
+        did_act, _, _ = does_action_mask_have_anything(action_mask)    #check whether these masks have anythign in them:
+        nx = x_mask[data_qus, :].sum(axis=0).astype(np.int32)  # (S,)
+        nz = z_mask[data_qus, :].sum(axis=0).astype(np.int32) 
+        nx_rounds.append(nx)
+        nz_rounds.append(nz)
         stats_act["X"] += int(action_mask["X"].sum())
         stats_act["Z"] += int(action_mask["Z"].sum())
-
+        # print(f'Shot 100 -> nx {nx[100]}\tnz {nz[100]}')   #because we are using discrete action space , we get only one correction åer round, which is in only one qubit. 
+        # print(f'nx vect: {nx.sum()}, nz vect: {nz.sum()}')                        #so, vectorized, we have max 1024 correction per round
 
         '''
         #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
@@ -586,16 +592,16 @@ for ep in range(episodes):
         '''
 
         obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
-        r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current)
+        r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current, nx=nx, nz=nz)
         last_action=gate
         feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
         feature_vector = torch.from_numpy(feature_vector).float().to(device)  # (B, 9)
         feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
                     feature_vector.std(dim=0, keepdim=True) + 1e-6)
 
-        # if t==int(env.R/2):
-        #     print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
-        #     print(f'Reward: {r_step}')
+        if t==int(env.R/2):
+            print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
+            print(f'Reward: {r_step}')
 
         obs_prev_np=obs_current
         pos_frac_ep.append((r_step > 0).mean())
@@ -610,25 +616,51 @@ for ep in range(episodes):
         r_step_tensor = torch.nan_to_num(r_step_tensor, nan=0.0, posinf=0.0, neginf=0.0)
         # (optional) clip tiny range first days
         r_step_tensor = torch.clamp(r_step_tensor, -1.0, 1.0)
+      #  if ep==5: print(f'step reward: {r_step}')
 
         done_bool = (t == env.R - 1)          # shape: scalar bool
         done_mask = torch.zeros(B, device=device) if done_bool else torch.ones(B, device=device)
 
         buf.add(obs_t=feature_vector,action_t=a_t, logp_t=logp_t, value_t=V_t, reward_t=r_step_tensor, mask_t=done_mask)
 
+
+
+
+        # Example: suppose you keep detector slices per round
+        # slices = [(a0,b0), (a1,b1), ..., (aR,bR)]
+      
+
     # episode end
     dets, MR, obs_final, reward_terminal = env.finish_measure()
     final_rew=final_reward(obs_flips=obs_final)
-    final_rew_tensor=torch.from_numpy(final_rew).float().to(device)
+    final_rew_tensor = torch.as_tensor(final_rew, dtype=torch.float32, device=device)
     final_rew_tensor = torch.nan_to_num(final_rew_tensor, nan=0.0, posinf=0.0, neginf=0.0)
     final_rew_tensor = torch.clamp(final_rew_tensor, -1.0, 1.0)         #oxi gia pnta
     buf.rewards[-1] = buf.rewards[-1] + final_rew_tensor
+
+    det_count=np.stack([dets[a:b, :].sum(axis=0) for (a, b) in slices], axis=0)
+    all_metrics = []
+    for t in range(env.R - 1):
+        det_prev = det_count[t - 1] if t > 0 else np.zeros(S)
+        det_now  = det_count[t]
+
+        # assume you stored per-round nx,nz arrays
+        nx_t, nz_t = nx_rounds[t], nz_rounds[t]
+
+        m = round_overcorr_metrics_discrete(det_prev, det_now, nx_t, nz_t)
+        all_metrics.append(m)
+
+    # average over rounds
+    avg = {k: np.mean([m[k] for m in all_metrics]) for k in all_metrics[0]}
+    print("episode over-corr:", avg)
+
+
+
 
     buf.finalize(cfg=RolloutConfig(),last_value=None)
     # After buf.finalize(...)
     advs = buf._advs
     rets = buf._rets
-
 
     # Defensive clamp (keeps training going while you debug)
     buf._advs = torch.clamp(advs, -10.0, 10.0)
@@ -643,22 +675,17 @@ for ep in range(episodes):
                     update_idx=ep, total_updates=episodes)
 
     # take mean across rounds in this episode
+
+
     pos_frac.append(np.mean(pos_frac_ep))
     neg_frac.append(np.mean(neg_frac_ep))
-    print(f"LER={logical_error_rate(B, obs_final):.4f} "
-          f"mean step reward={torch.mean(buf._advs):.4f}")
-    print("ADVS stats:", torch.isnan(advs).sum().item(), advs.min().item(), advs.max().item(), advs.std().item())
-    print("RETS stats:", torch.isnan(rets).sum().item(), rets.min().item(), rets.max().item(), rets.std().item())
 
-    s = stats
-    print(f"PPO: pi={s['loss_pi']:.3f} v={s['loss_v']:.3f} "
-        f"H={s['entropy']:.3f} KL={s['kl']:.4f} "
-        f"clip={s['clip_frac']:.2f} EV={s['ev']:.3f} "
-        f"| grad={s['grad_norm']:.2f} logitσ={s['logits_std']:.3f} "
-        f"ent_coef={s['entropy_coef_used']:.1e}")
-    mean_corr_per_shot = (stats_act["X"] + stats_act["Z"]) / (B * env.R)
-    print(f"corr/shot={mean_corr_per_shot:.3f} (X={stats_act['X']}, Z={stats_act['Z']})")
-    kl = s["kl"]
+
+    summary(ep=ep,buf=buf,  env=env, stats_act=stats_act,
+             s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
+
+##We are optimize and tubnig the learning rate of the actor 
+    kl = stats["kl"]
     if kl is not None:
         if kl > 0.035:
             new_lr = set_group_lr(optimizer, "actor", factor=0.9)
@@ -711,38 +738,6 @@ list_with_syndromes_per_round=[]
 syndrome=torch.from_numpy(SxRxD).float().cuda() 
 
 # compute advantages & update PPO
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# export_dataset(circuit=circuit,
-#                M_data_local=M_data_local,
-#                M_anc_local=M_anch_local,
-#                M2_local=M_2,
-#                data_ids=data_qus,
-#                anc_ids=anchs,
-#                gate_pairs=cx,
-#                out_prefix='extracted')
-# # force Z on first data row in round 0 for first 16 shots
-# M_forced = M_data_local.copy()
-# M_forced[:] = 0
-# M_forced[0, 0, :16] = 2  # your codes: X=1, Z=2, Y=3
-# dets_f, _, _ = run_batched_data_only(circuit, M_forced, data_ids=data_qus)
-
-# who = np.where(dets_f.any(axis=1))[0]
-# print("detectors triggered by forced Z (subset):", who[:20])
-
 
 
 

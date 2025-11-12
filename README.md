@@ -149,3 +149,15 @@ must do rest of the week
 
 Fixed metrics for PPO , inifinite logits and too many corrections, fixed action masks actually injecting. 
 LER is decreasing!! Actor/Critic both learning (KL is in the range 0.01,0.03) EV increasing
+
+## 5/11/25:
+Must make an evaluation testg for massk so that we actually coampre, cause cxurrently im generating new masks every episode. 
+Must introduce penalty in reward for over-correcting cause currently corr/shot is way too high (0.998)
+
+## 12/11/25:
+
+Ler is decreasing a lot
+step_reward function mdódified so that it punishes over-correction
+added stats on corrections 
+ ### overall we have a good baseline without KalMan, and probably good reward hyperparameters
+
