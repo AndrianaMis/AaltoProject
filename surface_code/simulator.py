@@ -11,14 +11,14 @@ from visuals.corrs import make_Crr_heatmaps
 from surface_code.M0 import mask_generator, mask_init
 from visuals import corrs
 from .export import export_syndrome_dataset
-from surface_code.stats import analyze_decoding_stats
+from surface_code.stats import analyze_decoding_stats, summarize_noise
 from decoder.KalMamba import DecoderAgent, RolloutBuffer, RolloutConfig
 from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything
 import torch
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
 from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits, optimize_ppo
 from decoder.reward_functions import step_reward, final_reward, round_overcorr_metrics_discrete
-from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends
+from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends, plot_ev_kl_entropy, plot_loss_v_pi
 import time
 
 
@@ -128,6 +128,7 @@ for key in ("t1", "t2", "t3", "t4"):
 
 #---------------------------------  FlipSIm-------------------------------------------------
 def generate_M0(seed=None , S:int=1024):
+    rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
     res = [
         mask_generator(
             qubits=len(data_qus),
@@ -135,7 +136,8 @@ def generate_M0(seed=None , S:int=1024):
             qubits_ind=data_qus,   # you’re already generating data-only rows
             cfg=cfg_m0,
             actives_list=True, 
-            seed=seed
+            seed=None, 
+            rng=rng
         )
         for _ in range(S)
     ]
@@ -145,6 +147,11 @@ def generate_M0(seed=None , S:int=1024):
     M_data = np.stack(Ms, axis=-1).astype(np.int8)       # -> shape (D, R, S)
     actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
 
+    # print(f'For M0 generation we are using the following p_starts : \n')
+    # for key in ("t1", "t2", "t3", "t4"):
+    #         if key in cfg_m0 and cfg_m0[key].get("enabled", False) and "p_start" in cfg_m0[key]:
+    #             print('\t-',cfg_m0[key]["p_start"])
+    
     # print("M_data shape:", M_data.shape)
     # print("actives shape:", actives.shape)
 
@@ -248,6 +255,8 @@ for key in ("t1", "t2", "t3", "t4"):
 
 #---------------------------------  FlipSIm-------------------------------------------------
 def generate_M1(seed=None, S:int=1024):
+    rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+
     res = [
         mask_generator_M1(
             qubits=len(anchs),
@@ -255,7 +264,9 @@ def generate_M1(seed=None, S:int=1024):
             qubits_ind=anchs,   # you’re already generating data-only rows
             cfg=cfg_m1,
             actives_list=True, 
-            seed=seed
+            seed=None,
+            rng=rng
+
         )
         for _ in range(S)
     ]
@@ -269,8 +280,16 @@ def generate_M1(seed=None, S:int=1024):
     # print("actives shape:", actives.shape)
 
 
+    # print(f'For M1 generation we are using the following p_starts : \n')
+    # for key in ("t1", "t2", "t3", "t4"):
+    #         if key in cfg_m1 and cfg_m1[key].get("enabled", False) and "p_start" in cfg_m1[key]:
+    #             print('\t-',cfg_m1[key]["p_start"])
+
     M1_local=make_M_anc_local_from_masks(masks=M_anch, anc_ids=anchs, rounds=repeat_body_counts )
     stats = measure_stacked_mask_stats(M1_local, "MANCH_local")
+    # cnt = stats["per_shot_counts"]            # from the meter we made
+    # print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+ 
 
     return M1_local, stats
 
@@ -352,31 +371,38 @@ cat_counts=[0, 0, 0, 0]
 
 #print(f'M2: \n{M2[:,:,1]}')
 def generate_M2(seed=None, S:int=1024):
+    rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
+
     res = [
         mask_generator_M2(
             gates=cx,
             rounds=repeat_body_counts,
             cfg=cfg_m2,
             actives_list=True,
-            seed=seed
+            seed=None,
+            rng=rng
         )
         for _ in range(S)
     ]
 
-
+    # print(f'For M2 generation we are using the following p_starts : \n')
+    # for key in ("t1", "t2", "t3", "t4"):
+    #         if key in cfg_m2 and cfg_m2[key].get("enabled", False) and "p_start" in cfg_m2[key]:
+    #             print('\t-',cfg_m2[key]["p_start"])
     Ms, cats = zip(*res)                 # Ms: tuple of (D,R) arrays; cats: tuple of [c1,c2,c3,c4]
     M2_local = np.stack(Ms, axis=-2).astype(np.int8)    # -> (E,R,S,2)
     actives = np.array(cats, dtype=np.int32).T           # -> shape (4, S)
 
 
-
-
     stats=measure_m2_mask_stats(M2_local)
+
+    cnt = stats["per_shot_counts"]            # from the meter we made
+    print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+
+
     return M2_local, stats
 
 # ##Check wtf these are and the physics behind them 
-# cnt = stats["per_shot_counts"]            # from the meter we made
-# print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
 
 # print("== M2 sanity ==")
 # stats_m2=m2_stats(M2_local)
@@ -511,9 +537,19 @@ B = 1024  # shots in parallel
 S=1024
 mode="discrete"
 lers=[]
-episodes=15
+episodes=25
+
+
 pos_frac=[]
 neg_frac=[]
+losses_v=[]
+losses_p=[]
+kls=[]
+evs=[]
+entropies=[]
+
+kl_stop=0.015
+
 done_mask=torch.tensor(1.0)
 base_seed = 1234
 for ep in range(episodes):
@@ -526,6 +562,9 @@ for ep in range(episodes):
     M0_local, stats_M0=generate_M0(seed=rng_seed)
     M1_local, stats_M1=generate_M1(seed=rng_seed)
     M2_local, stats_M2=generate_M2(seed=rng_seed)
+    noise_summary=summarize_noise(stats_M0=stats_M0, stats_M1=stats_M1, stats_M2=stats_M2)
+    noise_scalar = noise_summary["noise_level_scalar"]
+    print(f'Noise summary \n\t-noise scalar: {noise_scalar}\n\tfano M0:{ noise_summary["M0"]["fano"]}\tfano M1:{ noise_summary["M1"]["fano"]}\tfano M2:{ noise_summary["M2"]["fano"]}')
     obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
     obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
     agent.begin_episode(B, device=device)
@@ -670,7 +709,7 @@ for ep in range(episodes):
     lers.append(ler)
     #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
     stats = optimize_ppo(agent, buf, optimizer,
-                     clip_eps=0.2, epochs=6, batch_size=1024,
+                     clip_eps=0.1, epochs=4, batch_size=1024,
                     entropy_coef=1e-3, entropy_coef_min=1e-4,
                     update_idx=ep, total_updates=episodes)
 
@@ -679,18 +718,25 @@ for ep in range(episodes):
 
     pos_frac.append(np.mean(pos_frac_ep))
     neg_frac.append(np.mean(neg_frac_ep))
+    losses_p.append(stats["loss_pi"])
+    losses_v.append(stats["loss_v"])
+    entropies.append(stats["entropy"])
+    kls.append(stats["kl"])
+    evs.append(stats["ev"])
+
 
 
     summary(ep=ep,buf=buf,  env=env, stats_act=stats_act,
              s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
 
 ##We are optimize and tubnig the learning rate of the actor 
+
     kl = stats["kl"]
     if kl is not None:
-        if kl > 0.035:
+        if kl > kl_stop:
             new_lr = set_group_lr(optimizer, "actor", factor=0.9)
             if new_lr is not None:
-                print(f"[tune] KL={kl:.4f} > 0.035 → actor lr ↓ to {new_lr:.2e}")
+                print(f"[tune] KL={kl:.4f} > {kl_stop} → actor lr ↓ to {new_lr:.2e}")
         elif kl < 0.010:
             new_lr = set_group_lr(optimizer, "actor", factor=1.1)
             if new_lr is not None:
@@ -706,10 +752,10 @@ for ep in range(episodes):
 
 
 # analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
-# plot_LERvsSTEPS(lers)
-# plot_step_reward_trends(pos_frac, neg_frac)
-
-
+plot_LERvsSTEPS(lers)
+plot_step_reward_trends(pos_frac, neg_frac)
+plot_ev_kl_entropy(ev=evs,kl=kls,entropy=entropies)
+plot_loss_v_pi(v=losses_v, pi=losses_p)
 
 
 DET_by_round = split_DET_by_round(dets, slices)

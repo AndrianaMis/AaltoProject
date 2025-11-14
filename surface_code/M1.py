@@ -58,6 +58,7 @@ def spatial_clusters(
 
     for t in range(rounds):
         if rng.random() < p_start:
+            
             for _ in range(clusters_per_burst):
                 empty_sites = np.flatnonzero(m[:, t] == 0)
                 if empty_sites.size == 0:
@@ -172,6 +173,7 @@ def temporal_streaks_single_qubit(
                 continue
 
             if rng.random() < p_start:
+
                 L = sample_geometric_len(rng, gamma, max_len) + 1
                 pauli_code = sample_pauli_code_spam(rng, fY=fY)   # << change
                 L_eff = 0
@@ -233,6 +235,7 @@ def extend_clusters(
             continue
         cand += 1
         if rng.random() < p_start:
+
             L = sample_geometric_len(rng, gamma, max_len) + 1
             pauli_code = code
             L_eff = 0
@@ -459,7 +462,12 @@ def multi_qubit_multi_round2(
 
 # Each qubit in each round should experience at most one error event. 
 # The error types are exclusive: if a location is designated to have a Y error, then only a Y error is injected there (not an X and Y together, for example). 
-def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_list:bool=False, seed=None):
+def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_list:bool=False, seed=None, rng=None):
+    if rng is None:
+        rng = np.random.default_rng(seed)
+    
+    
+    
     m = mask_init(qubits=qubits, rounds=rounds)
     fY = cfg.get("M1_pauli", {}).get("fY", 0.05)
 
@@ -468,47 +476,51 @@ def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_lis
             m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind,
             p_start=cfg["t1"]["p_start"], wrap=cfg["t1"]["wrap"],
             rad=cfg["t1"]["rad"], pr_to_neigh=cfg["t1"]["pr_to_neigh"],
-            fY=fY, rng_seed=seed                                    # << pass fY
+            fY=fY, rng_seed=seed ,rng=rng                                   # << pass fY
         )
         c1 = len(clusters) > 0
     else:
         clusters = []; c1 = False
 
     if cfg["t2"]["enabled"]:
+
         m, streaks2 = temporal_streaks_single_qubit(
             m=m, qus=qubits, rounds=rounds,
             p_start=cfg["t2"]["p_start"], gamma=cfg["t2"]["gamma"],
-            fY=fY, rng_seed=seed                                      # << pass fY
+            fY=fY, rng_seed=seed  ,rng=rng                                    # << pass fY
         )
         c2 = len(streaks2) > 0
     else:
         c2 = False
 
     if cfg["t3"]["enabled"]:
+       
+
         if not clusters:
             m, clusters = spatial_clusters(
                 m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind,
                 p_start=cfg["t1"]["p_start"], wrap=cfg["t1"]["wrap"],
                 rad=cfg["t1"]["rad"], pr_to_neigh=cfg["t1"]["pr_to_neigh"],
-                fY=fY, rng_seed=seed 
+                fY=fY, rng_seed=seed ,rng=rng
             )
             c1 = c1 or (len(clusters) > 0)
         m, streaks3 = extend_clusters(
             m=m, rounds=rounds, qus=qubits, clusters=clusters,
             p_start=cfg["t3"]["p_start"], gamma=cfg["t3"]["gamma"],
-            fY=fY , rng_seed=seed                                      # << pass fY (optional)
+            fY=fY , rng_seed=seed    ,rng=rng                               # << pass fY (optional)
         )
         c3 = len(streaks3) > 0
     else:
         c3 = False
 
     if cfg["t4"]["enabled"]:
+
         m, events4 = multi_qubit_multi_round2(
             m=m, qus=qubits, rounds=rounds,
             p_start=cfg["t4"]["p_start"], gamma=cfg["t4"]["gamma"],
             qset_min=cfg["t4"]["qset_min"], qset_max=cfg["t4"]["qset_max"],
             disjoint_qubit_groups=cfg["t4"]["disjoint_qubit_groups"],
-            fY=fY , rng_seed=seed                                      # << pass fY
+            fY=fY , rng_seed=seed   ,rng=rng                                   # << pass fY
         )
         c4 = len(events4) > 0
     else:

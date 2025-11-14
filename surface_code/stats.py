@@ -322,3 +322,67 @@ def analyze_decoding_stats(dets, obs, meas, M0, M1, M2, rounds, ancillas, circui
     corrs.plot_Crr_d(C_det, "C_rr — DET")
 
     print("\n=== End of Stats ===\n")
+
+
+
+
+
+
+
+
+
+
+def summarize_noise(stats_M0, stats_M1, stats_M2):
+    """
+    Summarize noise levels from stacked-mask statistics.
+    Input: dicts returned by measure_stacked_mask_stats or measure_m2_mask_stats
+    Output: summary dict with scalar metrics.
+    """
+
+    def _summ_scalar_stats(stats):
+        return {
+            "p_hat": float(stats["p_hat"]),
+            "empty_frac": float(stats["empty_fraction"]),
+            "mean_round": float(np.mean(stats["per_round_mean"])),
+            "mean_qubit": float(np.mean(stats["per_qubit_mean"])) if "per_qubit_mean" in stats else None,
+            "mean_events": float(np.mean(stats["per_shot_counts"])),
+            "var_events": float(np.var(stats["per_shot_counts"])),
+        }
+
+    summary = {
+        "M0": _summ_scalar_stats(stats_M0),
+        "M1": _summ_scalar_stats(stats_M1),
+
+        "M2": {
+            "p_hat": float(stats_M2["p_hat"]),
+            "empty_frac": float(stats_M2["empty_fraction"]),
+            "mean_round": float(np.mean(stats_M2["per_round_mean"])),
+            "mean_gate": float(np.mean(stats_M2["per_gate_mean"])),
+            "mean_pair_qubit": float(np.mean(stats_M2["per_pair_qubit_mean"])),
+            "mean_events": float(np.mean(stats_M2["per_shot_counts"])),
+            "var_events": float(np.var(stats_M2["per_shot_counts"])),
+        }
+    }
+
+    # --- Add derived indicators: fano factor and correlation score ---
+    for key in ["M0", "M1"]:
+        m = summary[key]
+        if m["mean_events"] > 0:
+            m["fano"] = m["var_events"] / m["mean_events"]
+        else:
+            m["fano"] = 0.0
+
+    # M2 fano
+    if summary["M2"]["mean_events"] > 0:
+        summary["M2"]["fano"] = summary["M2"]["var_events"] / summary["M2"]["mean_events"]
+    else:
+        summary["M2"]["fano"] = 0.0
+
+    # Detector-style "noise level" scalar (easy to plot across episodes)
+    summary["noise_level_scalar"] = (
+        summary["M0"]["p_hat"] +
+        summary["M1"]["p_hat"] +
+        summary["M2"]["p_hat"]
+    )
+
+    return summary

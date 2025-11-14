@@ -161,3 +161,20 @@ step_reward function mdódified so that it punishes over-correction
 added stats on corrections 
  ### overall we have a good baseline without KalMan, and probably good reward hyperparameters
 
+## 13/11/25:
+Should skip actions when everything is perfect in the episode
+!!dd a held-out evaluation set of fixed noise masks every N episodes for fair comparison.
+
+
+
+## 14/11/25:
+Must investigate the noise summary of the whole thing. Fano is 0.0 and scalar is very very small.
+
+-cfgs are ok each call, but for some reason we are not getting in 
+
+
+FIXED: im creating a new GENERATOR in each episode (new seed (+ep)) , and pass it to each generation function, and from there to each noise category function. 
+What changed: stats not THAT magically good but still good enough for now i think
+
+*Playing with clip_e , kl_stop and epochs shows that the less epochs the better. 
+Check the reason behind this and figure out what its metric says and the ideal vlaues.

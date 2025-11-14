@@ -28,3 +28,36 @@ def plot_step_reward_trends(pos_counts, neg_counts):
     plt.grid(True)
     plt.legend()
     plt.savefig('visuals/graphs/RewardTrends.png')
+
+
+
+
+
+
+def plot_ev_kl_entropy(ev,kl,entropy):
+    assert len(ev)==len(kl)==len(entropy), "length of stats is not the same (ev,kl,h)"
+    episodes = np.arange(1, len(ev)+1)
+    plt.figure(figsize=(6,4))
+    plt.plot(episodes, kl, marker='P', label="KL divergence")
+    plt.plot(episodes, ev, marker='X', label="Explained variance")
+    plt.plot(episodes, entropy, marker='H', label="Entropy")
+    plt.xlabel("Episode")
+    plt.ylabel("Stats")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig('visuals/graphs/KL_EV_H.png')
+
+
+def plot_loss_v_pi(v,pi):
+    episodes = np.arange(1, len(v)+1)
+    plt.figure(figsize=(6,4))
+    plt.plot(episodes, v, marker='o', label="Value Loss")
+    plt.plot(episodes, pi, marker='s', label="Policy Loss")
+    plt.xlabel("Episode")
+    plt.ylabel("Loss")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig('visuals/graphs/Losses_PPO.png')
+
+
+

@@ -186,6 +186,7 @@ def temporal_streaks_single_qubit(
                for each placed streak (useful for debugging/metrics).
     """
     if rng is None:
+        print(f'rng inside cat was NOne')
         rng = np.random.default_rng(rng_seed)
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
 
@@ -267,6 +268,8 @@ def extend_clusters(
      )-> tuple[np.ndarray, List[Tuple[List[Tuple[int, np.ndarray]], int, int]]]:
     
     if rng is None:
+        print(f'rng inside cat was NOne')
+    
         rng = np.random.default_rng(rng_seed)
     assert m.shape == (qus, rounds), "m must be shape (qus, rounds)"
     streaks: List[Tuple[List[Tuple[int, np.ndarray]], int, int]] = []    #[(cluster), length, -2]
@@ -377,6 +380,8 @@ def multi_qubit_multi_round2(
       (updated_mask, events) where each event is (Q, t0, L_eff, P).
     """
     if rng is None:
+        print(f'rng inside cat was NOne')
+
         rng = np.random.default_rng(rng_seed)
     assert m.shape == (qus, rounds)
 
@@ -536,8 +541,10 @@ def multi_qubit_multi_round2(
 # Each qubit in each round should experience at most one error event. 
 # The error types are exclusive: if a location is designated to have a Y error, then only a Y error is injected there (not an X and Y together, for example). 
 
-def mask_generator( qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:bool =False, seed=None):
-  
+def mask_generator( qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:bool =False, seed=None, rng=None):
+    if rng is None:
+        rng = np.random.default_rng(seed)
+
     m=mask_init(qubits=qubits, rounds=rounds)
     clusters= []
     spatial_one_round=cfg["t1"]["enabled"]
@@ -553,11 +560,10 @@ def mask_generator( qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:
     #     if k in cfg and cfg[k].get("enabled", False) and "p_start" in cfg[k]:
     #         cfg[k]["p_start"] *= wk
 
-
     if spatial_one_round:
         
         m,clusters=spatial_clusters(m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind, p_start=cfg["t1"]["p_start"], wrap=cfg["t1"]["wrap"], rad=cfg["t1"]["rad"], 
-                                    pr_to_neigh=cfg["t1"]["pr_to_neigh"], pX=cfg["t1"]["pX"], pZ=cfg["t1"]["pZ"], rng_seed=seed )
+                                    pr_to_neigh=cfg["t1"]["pr_to_neigh"], pX=cfg["t1"]["pX"], pZ=cfg["t1"]["pZ"], rng_seed=seed, rng=rng )
         # print('\n')
         # for event in clusters:
 
@@ -570,7 +576,7 @@ def mask_generator( qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:
             c1=True
 
     if temporal_one_qubit:
-        m, streaks2=temporal_streaks_single_qubit(m=m, qus=qubits, rounds=rounds, gamma=cfg["t2"]["gamma"], p_start=cfg["t2"]["p_start"],  pX=cfg["t2"]["pX"], pZ=cfg["t2"]["pZ"], rng_seed=seed )    #mask, ((qubit, round, streak length, pauli code))
+        m, streaks2=temporal_streaks_single_qubit(m=m, qus=qubits, rounds=rounds, gamma=cfg["t2"]["gamma"], p_start=cfg["t2"]["p_start"],  pX=cfg["t2"]["pX"], pZ=cfg["t2"]["pZ"], rng_seed=seed, rng=rng )    #mask, ((qubit, round, streak length, pauli code))
         # print('\n')
         # for streak in streaks:
         #    print(f'Event---Streak: {streak}')
@@ -584,7 +590,7 @@ def mask_generator( qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:
         streaks3=[]
         if not clusters:
             m,clusters=spatial_clusters(m=m, qus=qubits, rounds=rounds, qubit_nums=qubits_ind, p_start=cfg["t1"]["p_start"], wrap=cfg["t1"]["wrap"], rad=cfg["t1"]["rad"], 
-                                    pr_to_neigh=cfg["t1"]["pr_to_neigh"], pX=cfg["t1"]["pX"], pZ=cfg["t1"]["pZ"], rng_seed=seed )
+                                    pr_to_neigh=cfg["t1"]["pr_to_neigh"], pX=cfg["t1"]["pX"], pZ=cfg["t1"]["pZ"], rng_seed=seed, rng=rng )
             # print('\n')
             # for event in clusters:
             #     print(f'Event---Cluster: {event}')   #mask, (round, (qubits affected))
@@ -597,7 +603,7 @@ def mask_generator( qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:
             #     f"p_ext={cfg['t3']['p_start']}")
 
             #    print(f'{len(clusters)} extension\n')
-                m , streaks3=extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters, p_start=cfg["t3"]["p_start"], gamma=cfg["t3"]["gamma"], pX=cfg["t3"]["pX"], pZ=cfg["t3"]["pZ"], rng_seed=seed )
+                m , streaks3=extend_clusters(m=m, rounds=rounds, qus=qubits, clusters=clusters, p_start=cfg["t3"]["p_start"], gamma=cfg["t3"]["gamma"], pX=cfg["t3"]["pX"], pZ=cfg["t3"]["pZ"], rng_seed=seed , rng=rng)
                 c1=True
 
 
@@ -611,7 +617,7 @@ def mask_generator( qubits:int, rounds:int, qubits_ind: List,  cfg,actives_list:
 #thisc cat only for class 1 and 2. 
     if multi_qubit_temporal:
         m, events4=multi_qubit_multi_round2(m=m, qus=qubits, rounds=rounds, p_start=cfg["t4"]["p_start"], gamma=cfg["t4"]["gamma"], qset_min=cfg["t4"]["qset_min"], qset_max=cfg["t4"]["qset_max"], 
-                                 pX=cfg["t3"]["pX"], pZ=cfg["t3"]["pZ"], disjoint_qubit_groups=cfg["t4"]["disjoint_qubit_groups"], rng_seed=seed )
+                                 pX=cfg["t3"]["pX"], pZ=cfg["t3"]["pZ"], disjoint_qubit_groups=cfg["t4"]["disjoint_qubit_groups"], rng_seed=seed, rng=rng )
         # print('\n--------------------------Finished injecting random multi-qubit multi-round correlations ------------------')
         # print(f'\nMask M0 after multi qubit , multi-round:\n{m}\n\n')
 

@@ -168,6 +168,7 @@ def calibrate_start_rates_m2(
             if verbose:
                 print(f"[M2 cal] done: within ±{int(tol*100)}% of target.")
             break
+        
     return cfg
 
 
