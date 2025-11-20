@@ -6,7 +6,7 @@ class StimDecoderEnv:
     Online / per-round environment for RL decoding.
     Vectorized over shots S.
     """
-    def __init__(self, circuit, data_ids, anc_ids, gate_pairs, rounds, round_slices):
+    def __init__(self, circuit, data_ids, anc_ids, gate_pairs, rounds, round_slices, noise_scalar=1.0):
         self.circuit = circuit
         self.data_ids = np.asarray(data_ids)
         self.anc_ids  = np.asarray(anc_ids)
@@ -15,6 +15,13 @@ class StimDecoderEnv:
         self.round_slices = list(map(tuple, round_slices))  # [(a0,b0),...]
         self.R = len(self.round_slices)
         self._exec_det=0
+
+
+
+       
+        self.curriculum_stage = "noiseless"  # or "noisy"
+
+
 
         # Pre-split the generated circuit once
         from surface_code.helpers import build_circ_by_round_from_generated, extract_round_template_plus_suffix
@@ -249,7 +256,17 @@ class StimDecoderEnv:
         return dets, MR, obs, reward
 
 
+    def set_stage_noiseless(self):
+        """Phase 1: do-no-harm. No physical noise; only agent actions matter."""
+        self.curriculum_stage = "noiseless"
+        self.force_zero_masks = True  # if you have that flag in your mask gen
+        # or just ensure your mask generator returns zeros when noise_scalar=0
 
+    def set_stage_noisy(self, scalar: float = None):
+        """Phase 2: real decoding with physical noise."""
+        self.curriculum_stage = "noisy"
+        self.force_zero_masks = False
+     
 
 
 def det_syndrome_tensor(dets, round_slices):

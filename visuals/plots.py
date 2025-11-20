@@ -61,3 +61,15 @@ def plot_loss_v_pi(v,pi):
 
 
 
+def plot_LER_rstep_finalr(ler, r_step, finals):
+    assert len(ler)==len(r_step)==len(finals), "length of stats is not the same (ev,kl,h)"
+    episodes = np.arange(1, len(ler)+1)
+    plt.figure(figsize=(6,4))
+    plt.plot(episodes, ler, marker='P', label="LER")
+    plt.plot(episodes, r_step, marker='X', label="Mean step rewards")
+    plt.plot(episodes, finals, marker='H', label="Final rewards")
+    plt.xlabel("Episode")
+    plt.ylabel("Stats")
+    plt.grid(True)
+    plt.legend()
+    plt.savefig('visuals/graphs/L_RS_RF.png')

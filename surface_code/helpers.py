@@ -764,11 +764,24 @@ def summary(
 
 
 
+def map_coords_to_data_qubits(data_coords, coords):
+    for q,(a,b) in data_coords.items():
+        if(a,b)==coords:
+            return q
+    assert f"could not map coords: {coords} to an id"
+pos=[(-1,-1), (-1,+1), (+1,+1), (+1,-1)]
 
 
-
-
-
+def find_neighboring_qubits(det_coords,data_ids,data_coords, r):
+    neighbors={q:[] for q in data_ids}
+    for a,b,_ in det_coords[r]:
+        for (aa,bb) in pos:
+            potential_qubit_coords=(a+aa, b+bb)
+            if a+aa>=0 and b+bb>=0:
+                id=map_coords_to_data_qubits(data_coords=data_coords, coords=potential_qubit_coords)
+                print(f'Neighboring qubits of det ({a},{b}, {r}) is -> {id} - ({potential_qubit_coords}) ')
+                if id is not None: neighbors[id].append(((a+aa, b+bb)))
+    return neighbors
 
 
 

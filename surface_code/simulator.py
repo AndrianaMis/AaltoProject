@@ -13,12 +13,12 @@ from visuals import corrs
 from .export import export_syndrome_dataset
 from surface_code.stats import analyze_decoding_stats, summarize_noise
 from decoder.KalMamba import DecoderAgent, RolloutBuffer, RolloutConfig
-from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything
+from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything, find_neighboring_qubits
 import torch
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
 from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits, optimize_ppo
 from decoder.reward_functions import step_reward, final_reward, round_overcorr_metrics_discrete
-from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends, plot_ev_kl_entropy, plot_loss_v_pi
+from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends, plot_ev_kl_entropy, plot_loss_v_pi, plot_LER_rstep_finalr
 import time
 
 
@@ -344,7 +344,7 @@ print(f'CX gates:{ cx}\n Datas: {datss}\n Anchillas: {anchs}\n Repeats: {repeate
 cfg_m2 = calibrate_start_rates_m2(
     build_mask_once=build_m2_once,
     cfg=cfg_m2,
-    p_idle_target=0.005,   # e.g., a bit smaller than M0/M1
+    p_idle_target=cfg_m2["p_idle"],   # e.g., a bit smaller than M0/M1
     batch=batch_marg,
     iters=iters_marg,
     tol=0.05,
@@ -509,6 +509,20 @@ S_tot=10_000   #injection
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+coords_det=circuit.get_detector_coordinates()
+coords_qubits=circuit.get_final_qubit_coordinates()
+data_ids=data_qus
+anchilla_ids=anchs
+data_coords = {q: coords_qubits[q] for q in data_ids}
+anc_coords={q: coords_qubits[q] for q in anchilla_ids}
+all_det_coords = circuit.get_detector_coordinates()
+round_det_coords = []
+for (a, b) in slices:
+    # list of coords for detectors in this round
+    coords_this_round = [coords_det[i] for i in range(a, b)]
+    round_det_coords.append(coords_this_round)
+
+
 
 
 #for the d_in, it will be the feature vector in, if we include the mean of current detectors in encode_input function. 
@@ -519,7 +533,7 @@ agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
 # example param groups
 optim_groups = [
     {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
-    {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-4},
+    {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-3},
     {"name": "backbone","params": agent.backbone.parameters(),      "lr": 3e-4},
 ]
 
@@ -537,7 +551,7 @@ B = 1024  # shots in parallel
 S=1024
 mode="discrete"
 lers=[]
-episodes=25
+episodes=2
 
 
 pos_frac=[]
@@ -547,9 +561,31 @@ losses_p=[]
 kls=[]
 evs=[]
 entropies=[]
+raw_rewards_list=[]
+final_rewards=[]
 
-kl_stop=0.015
+kl_stop=0.035
+print("DATA qubit coords:")
+for q,c in data_coords.items():
+    print(q, c)
 
+print("\nANCILLA qubit coords:")
+for q,c in anc_coords.items():
+    print(q, c)
+
+# --- DETECTOR COORDS ---
+det_coords = circuit.get_detector_coordinates()
+
+print("\nDETECTORS by round:")
+for r,(a,b) in enumerate(slices):
+    print(f"Round {r}:")
+    print(round_det_coords[r])
+
+
+find_neighboring_qubits(det_coords=round_det_coords, data_ids=data_ids, data_coords= data_coords,r=0)
+
+
+tot_ler=0
 done_mask=torch.tensor(1.0)
 base_seed = 1234
 for ep in range(episodes):
@@ -585,6 +621,8 @@ for ep in range(episodes):
                     feature_vector.std(dim=0, keepdim=True) + 1e-6)
     nx_rounds=[]
     nz_rounds=[]
+    FIRST_ROUND=True
+
  #   print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
     for t in range(env.R):   # R = 9
 
@@ -601,7 +639,6 @@ for ep in range(episodes):
         logp_t    = logp_t.detach()          # <- detach
         V_t       = V_t.detach()  
         action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)  #make action mask ready for injecton with flipsim
-
 
         gate,qubit =decode_action_index(a=a_t,D=len(data_qus), device=device )
         x_mask=action_mask.get('X')
@@ -629,8 +666,10 @@ for ep in range(episodes):
         So, below im showing some important features that create a more clear picture of the curent and prev state of the env, if we make the feature vecto
         encoding thesee feature, we have a more rich representation of the env
         '''
-
+      
         obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
+        if t==0:
+            print(f'obs fired!: {obs_current.shape}\n {obs_current.sum()}')
         r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current, nx=nx, nz=nz)
         last_action=gate
         feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
@@ -709,11 +748,18 @@ for ep in range(episodes):
     lers.append(ler)
     #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
     stats = optimize_ppo(agent, buf, optimizer,
-                     clip_eps=0.1, epochs=4, batch_size=1024,
-                    entropy_coef=1e-3, entropy_coef_min=1e-4,
+                     clip_eps=0.1, epochs=4, batch_size=2048,
+                    entropy_coef=1e-3, entropy_coef_min=1e-5,
                     update_idx=ep, total_updates=episodes)
 
     # take mean across rounds in this episode
+
+    raw_rewards = torch.stack(buf.rewards, dim=0)  # (T, B)
+    raw_step_mean = raw_rewards.mean().item()
+    r_step_mean=r_step.mean()
+    raw_rewards_list.append(r_step_mean)
+    final_rewards.append(final_rew.mean())
+    
 
 
     pos_frac.append(np.mean(pos_frac_ep))
@@ -724,7 +770,7 @@ for ep in range(episodes):
     kls.append(stats["kl"])
     evs.append(stats["ev"])
 
-
+    tot_ler+=ler
 
     summary(ep=ep,buf=buf,  env=env, stats_act=stats_act,
              s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
@@ -756,10 +802,10 @@ plot_LERvsSTEPS(lers)
 plot_step_reward_trends(pos_frac, neg_frac)
 plot_ev_kl_entropy(ev=evs,kl=kls,entropy=entropies)
 plot_loss_v_pi(v=losses_v, pi=losses_p)
-
+plot_LER_rstep_finalr(ler=lers, r_step=raw_rewards_list, finals=final_rewards)
 
 DET_by_round = split_DET_by_round(dets, slices)
-
+#print(f'LER WHEN WE DON INJECT ACTIONS (action_mask is None): {tot_ler/episodes}')
 
 # print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
 # print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')

@@ -421,7 +421,7 @@ def optimize_ppo(
     update_idx: int | None = None,
     total_updates: int | None = None,
     entropy_coef_min: float = 1e-4,
-    kl_stop: float = 0.03,              # NEW: early-stop threshold per epoch
+    kl_stop: float = 0.015,              # NEW: early-stop threshold per epoch
 ):
     import math
     import torch
