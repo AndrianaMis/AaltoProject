@@ -178,3 +178,12 @@ What changed: stats not THAT magically good but still good enough for now i thin
 
 *Playing with clip_e , kl_stop and epochs shows that the less epochs the better. 
 Check the reason behind this and figure out what its metric says and the ideal vlaues.
+
+
+## 21/11:
+
+Idea: implement time aware alfa kai bhta sta reward function knobs. Main goal rn is to make the reward fucntion stable. 
+
+
+## 24/11: 
+try curiculum learning. save policy after it stabilizies without noise and then begin decoding. Making reward knobs dependent on time didnt work.

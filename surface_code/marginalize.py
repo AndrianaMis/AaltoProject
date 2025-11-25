@@ -170,7 +170,7 @@ def calibrate_start_rates_m2(
             break
         
     return cfg
-p_idle_t=0.05
+p_idle_t=0.001
 
 cfg_data= {
     "mix" : {"w1":0.25, "w2":0.6, "w3":0.1, "w4":0.05},

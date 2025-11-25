@@ -113,14 +113,19 @@ def round_overcorr_metrics_discrete(det_prev, det_now, nx, nz):
 
 
 
-ALPHA_CLEAR   = 0.5   # reward per bit cleared
+ALPHA_CLEAR   = 0.25  # reward per bit cleared
 BETA_PENALTY  = 0.05  # penalty per active bit
 LAMBDA_FLIP   = 1e-3  # small penalty per flip (start tiny!)
 BUDGET_K      = 1     # allow up to k flips “free-ish” per round
 LAMBDA_EXCESS = 5e-3  # stronger penalty for flips beyond k
 
 
+# ALPHA_START = 0.03   # reward for cleared bits at ep=0
+# ALPHA_END   = 0.20   # reward later in training
 
+# BETA_START  = 0.15   # penalty for active dets at ep=0
+# BETA_END    = 0.08   # softer penalty later
+  # NOT lower than 0.06
 
 # # reward knobs
 # ALPHA_CLEAR   = 0.45   # ↓ a touch (from 0.50)
@@ -140,6 +145,7 @@ def step_reward(
     lam_flip: float = LAMBDA_FLIP,
     k_budget: int   = BUDGET_K,
     lam_excess: float = LAMBDA_EXCESS,
+    ep:float =0.0
 ):
     """
     R_step(per shot) = alpha * (#cleared) - beta * (#active_now)
@@ -147,6 +153,12 @@ def step_reward(
 
     Returns: (S,) float32
     """
+
+    """
+    Suggestion: make the alpha and beta depend on the time (round) """
+    # alpha_t = ALPHA_START + ep * (ALPHA_END - ALPHA_START)
+    # beta_t  = BETA_START  + ep * (BETA_END  - BETA_START)
+
     # --- cast & shapes ---
     now  = np.asarray(obs_round, dtype=np.float32)          # (S, N_det)
     S    = now.shape[0]
@@ -201,5 +213,5 @@ def final_reward(obs_flips: np.ndarray) -> np.ndarray:
     # For surface code memory: 1 observable = logical X/Z parity
     # If flip = 1 → logical error
     logical_error = obs_flips.sum(axis=0) > 0   # (S,)  #np.where(condition, A, B) → element-wise: if condition is True → take A else → take B
-    reward = np.where(logical_error, -1.0, +1.0)
+    reward = np.where(logical_error, -5.0, +5.0)
     return reward

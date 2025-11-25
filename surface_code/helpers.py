@@ -589,7 +589,7 @@ def encode_obs(obs_curr, obs_prev, last_action, round_idx, total_rounds, pca_pro
 
 
 def set_group_lr(optimizer, name, *, factor=None, value=None,
-                 min_lr=1e-6, max_lr=3e-3):
+                 min_lr=1e-4, max_lr=6e-4):
     for g in optimizer.param_groups:
         if g.get("name") == name:
             if value is not None:

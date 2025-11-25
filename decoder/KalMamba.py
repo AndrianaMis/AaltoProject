@@ -403,6 +403,16 @@ def _entropy_from_logits(logits: torch.Tensor) -> torch.Tensor:
     return dist.entropy()  # (N,)
 
 
+def get_entropy_coef(progress, ent0,ent_final):
+    warm = 0.25
+
+    if progress < warm:
+        return ent0
+    
+    # cosine annealing from ent0 -> ent_final
+    t = (progress - warm) / (1 - warm)
+    return ent_final + 0.5 * (ent0 - ent_final) * (1 + np.cos(np.pi * t))
+
 
 
 
@@ -422,6 +432,7 @@ def optimize_ppo(
     total_updates: int | None = None,
     entropy_coef_min: float = 1e-4,
     kl_stop: float = 0.015,              # NEW: early-stop threshold per epoch
+    progress:float
 ):
     import math
     import torch
@@ -429,12 +440,15 @@ def optimize_ppo(
 
     device = next(agent.parameters()).device
 
-    # cosine-annealed entropy coeff (episode/update-wise)
-    if (update_idx is not None) and (total_updates is not None) and total_updates > 0:
-        cos_w = 0.5 * (1.0 + math.cos(math.pi * min(update_idx, total_updates) / total_updates))
-        entropy_coef_t = entropy_coef_min + (entropy_coef - entropy_coef_min) * cos_w
-    else:
-        entropy_coef_t = entropy_coef
+    # # cosine-annealed entropy coeff (episode/update-wise)
+    # if (update_idx is not None) and (total_updates is not None) and total_updates > 0:
+    #     cos_w = 0.5 * (1.0 + math.cos(math.pi * min(update_idx, total_updates) / total_updates))
+    #     entropy_coef_t = entropy_coef_min + (entropy_coef - entropy_coef_min) * cos_w
+    # else:
+    #     entropy_coef_t = entropy_coef
+
+    ent_coef=get_entropy_coef(progress=progress, ent0=entropy_coef, ent_final=entropy_coef_min)
+
 
     stats = {
         "loss_pi": 0.0, "loss_v": 0.0, "entropy": 0.0, "kl": 0.0,
@@ -487,7 +501,7 @@ def optimize_ppo(
             loss_v    = F.mse_loss(v_pred, rets)
 
             ent       = entropy.mean()
-            loss      = loss_pi + value_coef * loss_v - entropy_coef_t * ent
+            loss      = loss_pi + value_coef * loss_v - ent_coef * ent
 
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -535,5 +549,5 @@ def optimize_ppo(
     else:
         print("[warn] PPO update skipped: no valid minibatches")
 
-    stats["entropy_coef_used"] = entropy_coef_t
+    stats["entropy_coef_used"] = ent_coef
     return stats

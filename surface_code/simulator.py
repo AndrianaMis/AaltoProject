@@ -18,9 +18,9 @@ import torch
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
 from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits, optimize_ppo
 from decoder.reward_functions import step_reward, final_reward, round_overcorr_metrics_discrete
-from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends, plot_ev_kl_entropy, plot_loss_v_pi, plot_LER_rstep_finalr
+from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends, plot_ev_kl_entropy, plot_loss_v_pi, plot_LER_rstep_finalr, plot_effectiveness, plot_coef
 import time
-
+import os
 
 # Generate the rotated surface code circuit:
 distance = 3
@@ -488,6 +488,7 @@ print(f'slices: {slices}')
 
 
 
+
 env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
 # env.reset(M0_local=M_data_local, M1_local=M_anch_local, M2_local=M_2)
@@ -530,6 +531,10 @@ for (a, b) in slices:
 #agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
 d_in=9
 agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
+ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
+agent.load_state_dict(ckpt["policy_state_dict"])
+
+print("Loaded Stage-1 policy + backbone weights.")
 # example param groups
 optim_groups = [
     {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
@@ -551,8 +556,9 @@ B = 1024  # shots in parallel
 S=1024
 mode="discrete"
 lers=[]
-episodes=2
+episodes=300
 
+import time
 
 pos_frac=[]
 neg_frac=[]
@@ -563,8 +569,16 @@ evs=[]
 entropies=[]
 raw_rewards_list=[]
 final_rewards=[]
+no_improve=[]
+effective=[]
+act=[]
+idle=[]
+entropy_coefs=[]
 
-kl_stop=0.035
+
+
+
+kl_stop=0.020
 print("DATA qubit coords:")
 for q,c in data_coords.items():
     print(q, c)
@@ -584,10 +598,15 @@ for r,(a,b) in enumerate(slices):
 
 find_neighboring_qubits(det_coords=round_det_coords, data_ids=data_ids, data_coords= data_coords,r=0)
 
+best_ler = float("inf")
+check_time = time.strftime("%H:%M", time.localtime(time.time()))
+
 
 tot_ler=0
 done_mask=torch.tensor(1.0)
-base_seed = 1234
+base_seed = 1234    
+best_ckpt_path="RANDOM"
+
 for ep in range(episodes):
     start=time.time()
     print(f'\n[Episode {ep}]')
@@ -598,6 +617,7 @@ for ep in range(episodes):
     M0_local, stats_M0=generate_M0(seed=rng_seed)
     M1_local, stats_M1=generate_M1(seed=rng_seed)
     M2_local, stats_M2=generate_M2(seed=rng_seed)
+
     noise_summary=summarize_noise(stats_M0=stats_M0, stats_M1=stats_M1, stats_M2=stats_M2)
     noise_scalar = noise_summary["noise_level_scalar"]
     print(f'Noise summary \n\t-noise scalar: {noise_scalar}\n\tfano M0:{ noise_summary["M0"]["fano"]}\tfano M1:{ noise_summary["M1"]["fano"]}\tfano M2:{ noise_summary["M2"]["fano"]}')
@@ -612,6 +632,10 @@ for ep in range(episodes):
 
     pos_frac_ep=[]
     neg_frac_ep=[]
+
+    progress = ep / float(episodes)   # ep = current episode index (0..total_episodes-1)
+    progress = max(0.0, min(1.0, progress)) # clamp just in case
+
 
     all_action_masks=[]
     obs_prev_np=None
@@ -678,7 +702,7 @@ for ep in range(episodes):
                     feature_vector.std(dim=0, keepdim=True) + 1e-6)
 
         if t==int(env.R/2):
-            print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}')
+            print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}, zeros -> {(r_step==0).sum()}')
             print(f'Reward: {r_step}')
 
         obs_prev_np=obs_current
@@ -730,8 +754,17 @@ for ep in range(episodes):
 
     # average over rounds
     avg = {k: np.mean([m[k] for m in all_metrics]) for k in all_metrics[0]}
-    print("episode over-corr:", avg)
-
+    print("\nepisode over-corr:\n", avg)
+    no_impr=avg['no_improve_rate']
+    eff=avg["eff_act"]
+    act_rate=avg["act_rate"]
+    idle_rate=avg["idle_rate"]
+    no_improve.append(no_impr)
+    effective.append(eff)
+    act.append(act_rate)
+    idle.append(idle_rate)
+    # corrs.plot_intraround_corr_heatmaps(dets, slices, max_rounds=6)
+    # corrs.make_Crr_heatmaps(M0=M0_local, M1=M1_local, M2=M2_local, DET=dets, MR=MR, R=rounds, A=len(anc_ids))
 
 
 
@@ -746,12 +779,36 @@ for ep in range(episodes):
 
     ler=logical_error_rate(S, obs_final)
     lers.append(ler)
+    print(f'LER: {ler}')
+    # ler is a scalar float, e.g. logical error rate for this episode
+    if float(ler) < float(best_ler):
+        best_ler = ler
+        if os.path.exists(best_ckpt_path):
+            os.remove(best_ckpt_path)
+
+        best_ckpt_path = f"stage2_best_ler_{best_ler}_{str(check_time)}.pt"
+
+        torch.save(
+            {"agent": agent.state_dict(),
+            "episode": ep,
+            "noise_scalar": noise_scalar,
+
+            "ler": best_ler},
+            best_ckpt_path,
+        )
+        print(f"[CKPT] New best LER: {best_ler:.4f} at episode {ep}")
+
+
+
+
+
     #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
     stats = optimize_ppo(agent, buf, optimizer,
-                     clip_eps=0.1, epochs=4, batch_size=2048,
-                    entropy_coef=1e-3, entropy_coef_min=1e-5,
-                    update_idx=ep, total_updates=episodes)
-
+                     clip_eps=0.04, epochs=2, batch_size=2048,
+                    entropy_coef=3e-3, entropy_coef_min=1e-4,
+                    update_idx=ep, total_updates=episodes, progress=progress)
+    ent_coef=stats["entropy_coef_used"]
+    entropy_coefs.append(ent_coef)
     # take mean across rounds in this episode
 
     raw_rewards = torch.stack(buf.rewards, dim=0)  # (T, B)
@@ -776,18 +833,13 @@ for ep in range(episodes):
              s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
 
 ##We are optimize and tubnig the learning rate of the actor 
-
     kl = stats["kl"]
-    if kl is not None:
-        if kl > kl_stop:
-            new_lr = set_group_lr(optimizer, "actor", factor=0.9)
-            if new_lr is not None:
-                print(f"[tune] KL={kl:.4f} > {kl_stop} → actor lr ↓ to {new_lr:.2e}")
-        elif kl < 0.010:
-            new_lr = set_group_lr(optimizer, "actor", factor=1.1)
-            if new_lr is not None:
-                print(f"[tune] KL={kl:.4f} < 0.010 → actor lr ↑ to {new_lr:.2e}")
-
+    if kl is not None and kl > kl_stop:
+        new_lr = set_group_lr(optimizer, "actor", factor=0.9)
+        if new_lr is not None:
+            print(f"[tune] KL={kl:.4f} > {kl_stop} → actor lr ↓ to {new_lr:.2e}")
+        # elif kl < 0.010:
+        #     new_lr = set_group_lr(optimizer, "actor", factor=1.1)
 
 
 
@@ -801,17 +853,30 @@ for ep in range(episodes):
 plot_LERvsSTEPS(lers)
 plot_step_reward_trends(pos_frac, neg_frac)
 plot_ev_kl_entropy(ev=evs,kl=kls,entropy=entropies)
+plot_coef(coefs=entropy_coefs)
 plot_loss_v_pi(v=losses_v, pi=losses_p)
 plot_LER_rstep_finalr(ler=lers, r_step=raw_rewards_list, finals=final_rewards)
-
+plot_effectiveness(eff=effective, no_improve=no_improve, act=act, idle=idle)
 DET_by_round = split_DET_by_round(dets, slices)
+
 #print(f'LER WHEN WE DON INJECT ACTIONS (action_mask is None): {tot_ler/episodes}')
 
 # print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
 # print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')
 # print("prefix DETs =", env._cnt(env.prefix))   # expect 4
 # print("suffix DETs =", env._cnt(env.suffix))   # expect 4
+stage1_ckpt_path = "ppo_decoder_stage1_noiseless.pt"
 
+# torch.save(
+#     {
+#         "policy_state_dict": agent.state_dict(),
+#         # optional, if you want to reuse them:
+#         # "optimizer_state_dict": optimizer.state_dict(),
+#         # "config": config_dict,
+#     },
+#     stage1_ckpt_path,
+# )
+# print("Saved Stage-1 checkpoint to", stage1_ckpt_path)
 
 SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
 
