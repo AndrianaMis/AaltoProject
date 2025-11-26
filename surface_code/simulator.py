@@ -21,7 +21,7 @@ from decoder.reward_functions import step_reward, final_reward, round_overcorr_m
 from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends, plot_ev_kl_entropy, plot_loss_v_pi, plot_LER_rstep_finalr, plot_effectiveness, plot_coef
 import time
 import os
-
+import surface_code.evaulate as evaluate
 # Generate the rotated surface code circuit:
 distance = 3
 rounds = 10
@@ -489,7 +489,6 @@ print(f'slices: {slices}')
 
 
 
-env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
 # env.reset(M0_local=M_data_local, M1_local=M_anch_local, M2_local=M_2)
 # for r in range(env.R):  # not 'rounds'
@@ -526,59 +525,17 @@ for (a, b) in slices:
 
 
 
-#for the d_in, it will be the feature vector in, if we include the mean of current detectors in encode_input function. 
-#So, it will be 9. 
-#agent=DecoderAgent(d_in=env.body_detectors, n_actions=2*len(data_qus) +1).to(device)
-d_in=9
-agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
-ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
-agent.load_state_dict(ckpt["policy_state_dict"])
-
-print("Loaded Stage-1 policy + backbone weights.")
-# example param groups
-optim_groups = [
-    {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
-    {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-3},
-    {"name": "backbone","params": agent.backbone.parameters(),      "lr": 3e-4},
-]
-
-optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
-total = 0
-# for i,g in enumerate(optimizer.param_groups):
-#     cnt = sum(p.numel() for p in g['params'])
-#     total += cnt
-#     print(f"group{i}: lr={g['lr']} n_params={len(g['params'])} elems={cnt}")
-
 
 all_qids = list(data_qus) + list(anchs)
 Q_total = max([0] + all_qids)
 B = 1024  # shots in parallel
 S=1024
 mode="discrete"
-lers=[]
-episodes=300
-
-import time
-
-pos_frac=[]
-neg_frac=[]
-losses_v=[]
-losses_p=[]
-kls=[]
-evs=[]
-entropies=[]
-raw_rewards_list=[]
-final_rewards=[]
-no_improve=[]
-effective=[]
-act=[]
-idle=[]
-entropy_coefs=[]
 
 
 
 
-kl_stop=0.020
+
 print("DATA qubit coords:")
 for q,c in data_coords.items():
     print(q, c)
@@ -598,248 +555,267 @@ for r,(a,b) in enumerate(slices):
 
 find_neighboring_qubits(det_coords=round_det_coords, data_ids=data_ids, data_coords= data_coords,r=0)
 
-best_ler = float("inf")
-check_time = time.strftime("%H:%M", time.localtime(time.time()))
+
+def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
+                    optimizer, base_seed:int=1234):
+    pos_frac=[]
+    neg_frac=[]
+    losses_v=[]
+    losses_p=[]
+    kls=[]
+    evs=[]
+    lers=[]
+    entropies=[]
+    raw_rewards_list=[]
+    final_rewards=[]
+    no_improve=[]
+    effective=[]
+    act=[]
+    idle=[]
+    entropy_coefs=[]
+    best_ler = float("inf")
+    check_time = time.strftime("%H:%M", time.localtime(time.time()))
+
+    kl_stop=0.020
 
 
-tot_ler=0
-done_mask=torch.tensor(1.0)
-base_seed = 1234    
-best_ckpt_path="RANDOM"
+    tot_ler=0
+    done_mask=torch.tensor(1.0)
+ 
+    best_ckpt_path="RANDOM"
 
-for ep in range(episodes):
-    start=time.time()
-    print(f'\n[Episode {ep}]')
-    #just a check for the paramters adn the grads   
-    rng_seed = base_seed + ep
+    for ep in range(episodes):
+        print(f'\n[Episode {ep}]')
+        #just a check for the paramters adn the grads   
+        rng_seed = base_seed + ep
 
-    # --- episode init ---
-    M0_local, stats_M0=generate_M0(seed=rng_seed)
-    M1_local, stats_M1=generate_M1(seed=rng_seed)
-    M2_local, stats_M2=generate_M2(seed=rng_seed)
+        # --- episode init ---
+        M0_local, stats_M0=generate_M0(seed=rng_seed)
+        M1_local, stats_M1=generate_M1(seed=rng_seed)
+        M2_local, stats_M2=generate_M2(seed=rng_seed)
 
-    noise_summary=summarize_noise(stats_M0=stats_M0, stats_M1=stats_M1, stats_M2=stats_M2)
-    noise_scalar = noise_summary["noise_level_scalar"]
-    print(f'Noise summary \n\t-noise scalar: {noise_scalar}\n\tfano M0:{ noise_summary["M0"]["fano"]}\tfano M1:{ noise_summary["M1"]["fano"]}\tfano M2:{ noise_summary["M2"]["fano"]}')
-    obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
-    obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
-    agent.begin_episode(B, device=device)
-    buf = RolloutBuffer(obs_dim=9)  # store per-step data
-    buf.reset()
+        noise_summary=summarize_noise(stats_M0=stats_M0, stats_M1=stats_M1, stats_M2=stats_M2)
+        noise_scalar = noise_summary["noise_level_scalar"]
+        print(f'Noise summary \n\t-noise scalar: {noise_scalar}\n\tfano M0:{ noise_summary["M0"]["fano"]}\tfano M1:{ noise_summary["M1"]["fano"]}\tfano M2:{ noise_summary["M2"]["fano"]}')
+        obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
+        obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
+        agent.begin_episode(B, device=device)
+        buf = RolloutBuffer(obs_dim=9)  # store per-step data
+        buf.reset()
 
-    if ep==0: print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
-    stats_act = {"X": 0, "Z": 0}
+        if ep==0: print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
+        stats_act = {"X": 0, "Z": 0}
 
-    pos_frac_ep=[]
-    neg_frac_ep=[]
+        pos_frac_ep=[]
+        neg_frac_ep=[]
 
-    progress = ep / float(episodes)   # ep = current episode index (0..total_episodes-1)
-    progress = max(0.0, min(1.0, progress)) # clamp just in case
-
-
-    all_action_masks=[]
-    obs_prev_np=None
-    feature_vector=encode_obs(obs_curr=obs, obs_prev=None, last_action= 0, round_idx=0, total_rounds=env.R)
-    feature_vector = torch.from_numpy(feature_vector).to(device)  # (B, 9)
-    feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
-                    feature_vector.std(dim=0, keepdim=True) + 1e-6)
-    nx_rounds=[]
-    nz_rounds=[]
-    FIRST_ROUND=True
-
- #   print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
-    for t in range(env.R):   # R = 9
-
-        '''
-        1. the agent.act is using the critic-value_head to return V_t which is the estimate of the reward of the state
-        2. also it is giving us the logits, which are from the actor-policy_head 
-        3. we then get the action from the logits , which after is giving us the r_step reward and thus the actual value of the state
-        '''
-        logits, V_t, h_t = agent.act(feature_vector)    
-        a_t, logp_t = sample_from_logits(logits, mode=mode)       # MultiDiscrete or Discrete policy
-        a_t_cpu = a_t.detach().cpu()  #should be of size 2*d without zeros? 
-        logp_t_cpu = logp_t.detach().cpu()
-
-        logp_t    = logp_t.detach()          # <- detach
-        V_t       = V_t.detach()  
-        action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)  #make action mask ready for injecton with flipsim
-
-        gate,qubit =decode_action_index(a=a_t,D=len(data_qus), device=device )
-        x_mask=action_mask.get('X')
-        z_mask=action_mask.get('Z')
-        did_act, _, _ = does_action_mask_have_anything(action_mask)    #check whether these masks have anythign in them:
-        nx = x_mask[data_qus, :].sum(axis=0).astype(np.int32)  # (S,)
-        nz = z_mask[data_qus, :].sum(axis=0).astype(np.int32) 
-        nx_rounds.append(nx)
-        nz_rounds.append(nz)
-        stats_act["X"] += int(action_mask["X"].sum())
-        stats_act["Z"] += int(action_mask["Z"].sum())
-        # print(f'Shot 100 -> nx {nx[100]}\tnz {nz[100]}')   #because we are using discrete action space , we get only one correction åer round, which is in only one qubit. 
-        # print(f'nx vect: {nx.sum()}, nz vect: {nz.sum()}')                        #so, vectorized, we have max 1024 correction per round
-
-        '''
-        #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
-        #perfect corretions (making the syndrome be all zeros), could potentially be overshadowed by the noise injecyion after, cause we measure after the mask injections,
-        #but that's normal 
-
-        We might actually need to compress the observations (#shots, #dets) at some point, since when the code distance grows, the vector will become v v big
-        SO it would be great to haev a feature vector func???
-        in irder for d_in to remain 8 
+        progress = ep / float(episodes)   # ep = current episode index (0..total_episodes-1)
+        progress = max(0.0, min(1.0, progress)) # clamp just in case
 
 
-        So, below im showing some important features that create a more clear picture of the curent and prev state of the env, if we make the feature vecto
-        encoding thesee feature, we have a more rich representation of the env
-        '''
-      
-        obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
-        if t==0:
-            print(f'obs fired!: {obs_current.shape}\n {obs_current.sum()}')
-        r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current, nx=nx, nz=nz)
-        last_action=gate
-        feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
-        feature_vector = torch.from_numpy(feature_vector).float().to(device)  # (B, 9)
+        all_action_masks=[]
+        obs_prev_np=None
+        feature_vector=encode_obs(obs_curr=obs, obs_prev=None, last_action= 0, round_idx=0, total_rounds=env.R)
+        feature_vector = torch.from_numpy(feature_vector).to(device)  # (B, 9)
         feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
-                    feature_vector.std(dim=0, keepdim=True) + 1e-6)
+                        feature_vector.std(dim=0, keepdim=True) + 1e-6)
+        nx_rounds=[]
+        nz_rounds=[]
 
-        if t==int(env.R/2):
-            print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}, zeros -> {(r_step==0).sum()}')
-            print(f'Reward: {r_step}')
 
-        obs_prev_np=obs_current
-        pos_frac_ep.append((r_step > 0).mean())
-        neg_frac_ep.append((r_step < 0).mean())
-        all_action_masks.append(action_mask)
+    #   print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
+        for t in range(env.R):   # R = 9
+
+            '''
+            1. the agent.act is using the critic-value_head to return V_t which is the estimate of the reward of the state
+            2. also it is giving us the logits, which are from the actor-policy_head 
+            3. we then get the action from the logits , which after is giving us the r_step reward and thus the actual value of the state
+            '''
+            logits, V_t, h_t = agent.act(feature_vector)    
+            a_t, logp_t = sample_from_logits(logits, mode=mode)       # MultiDiscrete or Discrete policy
+            a_t_cpu = a_t.detach().cpu()  #should be of size 2*d without zeros? 
+            logp_t_cpu = logp_t.detach().cpu()
+
+            logp_t    = logp_t.detach()          # <- detach
+            V_t       = V_t.detach()  
+            action_mask = action_to_masks(a_t_cpu, mode, data_qus, num_qubits=Q_total+1, shots=B, classes_per_qubit=3)  #make action mask ready for injecton with flipsim
+
+            gate,qubit =decode_action_index(a=a_t,D=len(data_qus), device=device )
+            x_mask=action_mask.get('X')
+            z_mask=action_mask.get('Z')
+            did_act, _, _ = does_action_mask_have_anything(action_mask)    #check whether these masks have anythign in them:
+            nx = x_mask[data_qus, :].sum(axis=0).astype(np.int32)  # (S,)
+            nz = z_mask[data_qus, :].sum(axis=0).astype(np.int32) 
+            nx_rounds.append(nx)
+            nz_rounds.append(nz)
+            stats_act["X"] += int(action_mask["X"].sum())
+            stats_act["Z"] += int(action_mask["Z"].sum())
+            # print(f'Shot 100 -> nx {nx[100]}\tnz {nz[100]}')   #because we are using discrete action space , we get only one correction åer round, which is in only one qubit. 
+            # print(f'nx vect: {nx.sum()}, nz vect: {nz.sum()}')                        #so, vectorized, we have max 1024 correction per round
+
+            '''
+            #inject corrections BEFORE injecting the noise. THe corrections reflects the stochastic nature of the channel.
+            #perfect corretions (making the syndrome be all zeros), could potentially be overshadowed by the noise injecyion after, cause we measure after the mask injections,
+            #but that's normal 
+
+            We might actually need to compress the observations (#shots, #dets) at some point, since when the code distance grows, the vector will become v v big
+            SO it would be great to haev a feature vector func???
+            in irder for d_in to remain 8 
+
+
+            So, below im showing some important features that create a more clear picture of the curent and prev state of the env, if we make the feature vecto
+            encoding thesee feature, we have a more rich representation of the env
+            '''
+        
+            obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
+            if t==0:
+                print(f'obs fired!: {obs_current.shape}\n {obs_current.sum()}')
+            r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current, nx=nx, nz=nz)
+            last_action=gate
+            feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
+            feature_vector = torch.from_numpy(feature_vector).float().to(device)  # (B, 9)
+            feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
+                        feature_vector.std(dim=0, keepdim=True) + 1e-6)
+
+            if t==int(env.R/2):
+                print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}, zeros -> {(r_step==0).sum()}')
+                print(f'Reward: {r_step}')
+
+            obs_prev_np=obs_current
+            pos_frac_ep.append((r_step > 0).mean())
+            neg_frac_ep.append((r_step < 0).mean())
+            all_action_masks.append(action_mask)
+            
+
+            '''Update buffer, compute GAE'''
+
+            obs_c_tensor=torch.from_numpy(obs_current).float().to(device)
+            r_step_tensor=torch.from_numpy(r_step).float().to(device)
+            r_step_tensor = torch.nan_to_num(r_step_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+            # (optional) clip tiny range first days
+            r_step_tensor = torch.clamp(r_step_tensor, -1.0, 1.0)
+        #  if ep==5: print(f'step reward: {r_step}')
+
+            done_bool = (t == env.R - 1)          # shape: scalar bool
+            done_mask = torch.zeros(B, device=device) if done_bool else torch.ones(B, device=device)
+
+            buf.add(obs_t=feature_vector,action_t=a_t, logp_t=logp_t, value_t=V_t, reward_t=r_step_tensor, mask_t=done_mask)
+
+
+
+
+            # Example: suppose you keep detector slices per round
+            # slices = [(a0,b0), (a1,b1), ..., (aR,bR)]
         
 
-        '''Update buffer, compute GAE'''
+        # episode end
+        dets, MR, obs_final, reward_terminal = env.finish_measure()
+        final_rew=final_reward(obs_flips=obs_final)
+        final_rew_tensor = torch.as_tensor(final_rew, dtype=torch.float32, device=device)
+        final_rew_tensor = torch.nan_to_num(final_rew_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+        final_rew_tensor = torch.clamp(final_rew_tensor, -1.0, 1.0)         #oxi gia pnta
+        buf.rewards[-1] = buf.rewards[-1] + final_rew_tensor
 
-        obs_c_tensor=torch.from_numpy(obs_current).float().to(device)
-        r_step_tensor=torch.from_numpy(r_step).float().to(device)
-        r_step_tensor = torch.nan_to_num(r_step_tensor, nan=0.0, posinf=0.0, neginf=0.0)
-        # (optional) clip tiny range first days
-        r_step_tensor = torch.clamp(r_step_tensor, -1.0, 1.0)
-      #  if ep==5: print(f'step reward: {r_step}')
+        det_count=np.stack([dets[a:b, :].sum(axis=0) for (a, b) in slices], axis=0)
+        all_metrics = []
+        for t in range(env.R - 1):
+            det_prev = det_count[t - 1] if t > 0 else np.zeros(S)
+            det_now  = det_count[t]
 
-        done_bool = (t == env.R - 1)          # shape: scalar bool
-        done_mask = torch.zeros(B, device=device) if done_bool else torch.ones(B, device=device)
+            # assume you stored per-round nx,nz arrays
+            nx_t, nz_t = nx_rounds[t], nz_rounds[t]
 
-        buf.add(obs_t=feature_vector,action_t=a_t, logp_t=logp_t, value_t=V_t, reward_t=r_step_tensor, mask_t=done_mask)
+            m = round_overcorr_metrics_discrete(det_prev, det_now, nx_t, nz_t)
+            all_metrics.append(m)
 
-
-
-
-        # Example: suppose you keep detector slices per round
-        # slices = [(a0,b0), (a1,b1), ..., (aR,bR)]
-      
-
-    # episode end
-    dets, MR, obs_final, reward_terminal = env.finish_measure()
-    final_rew=final_reward(obs_flips=obs_final)
-    final_rew_tensor = torch.as_tensor(final_rew, dtype=torch.float32, device=device)
-    final_rew_tensor = torch.nan_to_num(final_rew_tensor, nan=0.0, posinf=0.0, neginf=0.0)
-    final_rew_tensor = torch.clamp(final_rew_tensor, -1.0, 1.0)         #oxi gia pnta
-    buf.rewards[-1] = buf.rewards[-1] + final_rew_tensor
-
-    det_count=np.stack([dets[a:b, :].sum(axis=0) for (a, b) in slices], axis=0)
-    all_metrics = []
-    for t in range(env.R - 1):
-        det_prev = det_count[t - 1] if t > 0 else np.zeros(S)
-        det_now  = det_count[t]
-
-        # assume you stored per-round nx,nz arrays
-        nx_t, nz_t = nx_rounds[t], nz_rounds[t]
-
-        m = round_overcorr_metrics_discrete(det_prev, det_now, nx_t, nz_t)
-        all_metrics.append(m)
-
-    # average over rounds
-    avg = {k: np.mean([m[k] for m in all_metrics]) for k in all_metrics[0]}
-    print("\nepisode over-corr:\n", avg)
-    no_impr=avg['no_improve_rate']
-    eff=avg["eff_act"]
-    act_rate=avg["act_rate"]
-    idle_rate=avg["idle_rate"]
-    no_improve.append(no_impr)
-    effective.append(eff)
-    act.append(act_rate)
-    idle.append(idle_rate)
-    # corrs.plot_intraround_corr_heatmaps(dets, slices, max_rounds=6)
-    # corrs.make_Crr_heatmaps(M0=M0_local, M1=M1_local, M2=M2_local, DET=dets, MR=MR, R=rounds, A=len(anc_ids))
+        # average over rounds
+        avg = {k: np.mean([m[k] for m in all_metrics]) for k in all_metrics[0]}
+        print("\nepisode over-corr:\n", avg)
+        no_impr=avg['no_improve_rate']
+        eff=avg["eff_act"]
+        act_rate=avg["act_rate"]
+        idle_rate=avg["idle_rate"]
+        no_improve.append(no_impr)
+        effective.append(eff)
+        act.append(act_rate)
+        idle.append(idle_rate)
+        # corrs.plot_intraround_corr_heatmaps(dets, slices, max_rounds=6)
+        # corrs.make_Crr_heatmaps(M0=M0_local, M1=M1_local, M2=M2_local, DET=dets, MR=MR, R=rounds, A=len(anc_ids))
 
 
 
-    buf.finalize(cfg=RolloutConfig(),last_value=None)
-    # After buf.finalize(...)
-    advs = buf._advs
-    rets = buf._rets
+        buf.finalize(cfg=RolloutConfig(),last_value=None)
+        # After buf.finalize(...)
+        advs = buf._advs
+        rets = buf._rets
 
-    # Defensive clamp (keeps training going while you debug)
-    buf._advs = torch.clamp(advs, -10.0, 10.0)
-    buf._rets = torch.clamp(rets, -10.0, 10.0)
+        # Defensive clamp (keeps training going while you debug)
+        buf._advs = torch.clamp(advs, -10.0, 10.0)
+        buf._rets = torch.clamp(rets, -10.0, 10.0)
 
-    ler=logical_error_rate(S, obs_final)
-    lers.append(ler)
-    print(f'LER: {ler}')
-    # ler is a scalar float, e.g. logical error rate for this episode
-    if float(ler) < float(best_ler):
-        best_ler = ler
-        if os.path.exists(best_ckpt_path):
-            os.remove(best_ckpt_path)
+        ler=logical_error_rate(S, obs_final)
+        lers.append(ler)
+        print(f'LER: {ler}')
+        # ler is a scalar float, e.g. logical error rate for this episode
+        if float(ler) < float(best_ler):
+            best_ler = ler
+            if os.path.exists(best_ckpt_path):
+                os.remove(best_ckpt_path)
 
-        best_ckpt_path = f"stage2_best_ler_{best_ler}_{str(check_time)}.pt"
+            best_ckpt_path = f"stage2_best_ler_{best_ler}_{str(check_time)}.pt"
 
-        torch.save(
-            {"agent": agent.state_dict(),
-            "episode": ep,
-            "noise_scalar": noise_scalar,
+            torch.save(
+                {"agent": agent.state_dict(),
+                "episode": ep,
+                "noise_scalar": noise_scalar,
 
-            "ler": best_ler},
-            best_ckpt_path,
-        )
-        print(f"[CKPT] New best LER: {best_ler:.4f} at episode {ep}")
+                "ler": best_ler},
+                best_ckpt_path,
+            )
+            print(f"[CKPT] New best LER: {best_ler:.4f} at episode {ep}")
 
 
 
 
 
-    #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
-    stats = optimize_ppo(agent, buf, optimizer,
-                     clip_eps=0.04, epochs=2, batch_size=2048,
-                    entropy_coef=3e-3, entropy_coef_min=1e-4,
-                    update_idx=ep, total_updates=episodes, progress=progress)
-    ent_coef=stats["entropy_coef_used"]
-    entropy_coefs.append(ent_coef)
-    # take mean across rounds in this episode
+        #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
+        stats = optimize_ppo(agent, buf, optimizer,
+                        clip_eps=0.04, epochs=2, batch_size=2048,
+                        entropy_coef=3e-3, entropy_coef_min=1e-4,
+                        update_idx=ep, total_updates=episodes, progress=progress)
+        ent_coef=stats["entropy_coef_used"]
+        entropy_coefs.append(ent_coef)
+        # take mean across rounds in this episode
 
-    raw_rewards = torch.stack(buf.rewards, dim=0)  # (T, B)
-    raw_step_mean = raw_rewards.mean().item()
-    r_step_mean=r_step.mean()
-    raw_rewards_list.append(r_step_mean)
-    final_rewards.append(final_rew.mean())
-    
+        raw_rewards = torch.stack(buf.rewards, dim=0)  # (T, B)
+        raw_step_mean = raw_rewards.mean().item()
+        r_step_mean=r_step.mean()
+        raw_rewards_list.append(r_step_mean)
+        final_rewards.append(final_rew.mean())
+        
 
 
-    pos_frac.append(np.mean(pos_frac_ep))
-    neg_frac.append(np.mean(neg_frac_ep))
-    losses_p.append(stats["loss_pi"])
-    losses_v.append(stats["loss_v"])
-    entropies.append(stats["entropy"])
-    kls.append(stats["kl"])
-    evs.append(stats["ev"])
+        pos_frac.append(np.mean(pos_frac_ep))
+        neg_frac.append(np.mean(neg_frac_ep))
+        losses_p.append(stats["loss_pi"])
+        losses_v.append(stats["loss_v"])
+        entropies.append(stats["entropy"])
+        kls.append(stats["kl"])
+        evs.append(stats["ev"])
 
-    tot_ler+=ler
+        tot_ler+=ler
 
-    summary(ep=ep,buf=buf,  env=env, stats_act=stats_act,
-             s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
+        summary(ep=ep,buf=buf,  env=env, stats_act=stats_act,
+                s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
 
-##We are optimize and tubnig the learning rate of the actor 
-    kl = stats["kl"]
-    if kl is not None and kl > kl_stop:
-        new_lr = set_group_lr(optimizer, "actor", factor=0.9)
-        if new_lr is not None:
-            print(f"[tune] KL={kl:.4f} > {kl_stop} → actor lr ↓ to {new_lr:.2e}")
-        # elif kl < 0.010:
-        #     new_lr = set_group_lr(optimizer, "actor", factor=1.1)
+    ##We are optimize and tubnig the learning rate of the actor 
+        kl = stats["kl"]
+        if kl is not None and kl > kl_stop:
+            new_lr = set_group_lr(optimizer, "actor", factor=0.9)
+            if new_lr is not None:
+                print(f"[tune] KL={kl:.4f} > {kl_stop} → actor lr ↓ to {new_lr:.2e}")
+            # elif kl < 0.010:
+            #     new_lr = set_group_lr(optimizer, "actor", factor=1.1)
 
 
 
@@ -849,24 +825,44 @@ for ep in range(episodes):
 
 
 
-# analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
-plot_LERvsSTEPS(lers)
-plot_step_reward_trends(pos_frac, neg_frac)
-plot_ev_kl_entropy(ev=evs,kl=kls,entropy=entropies)
-plot_coef(coefs=entropy_coefs)
-plot_loss_v_pi(v=losses_v, pi=losses_p)
-plot_LER_rstep_finalr(ler=lers, r_step=raw_rewards_list, finals=final_rewards)
-plot_effectiveness(eff=effective, no_improve=no_improve, act=act, idle=idle)
-DET_by_round = split_DET_by_round(dets, slices)
+    # analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
+    plot_LERvsSTEPS(lers)
+    plot_step_reward_trends(pos_frac, neg_frac)
+    plot_ev_kl_entropy(ev=evs,kl=kls,entropy=entropies)
+    plot_coef(coefs=entropy_coefs)
+    plot_loss_v_pi(v=losses_v, pi=losses_p)
+    plot_LER_rstep_finalr(ler=lers, r_step=raw_rewards_list, finals=final_rewards)
+    plot_effectiveness(eff=effective, no_improve=no_improve, act=act, idle=idle)
+    DET_by_round = split_DET_by_round(dets, slices)
 
-#print(f'LER WHEN WE DON INJECT ACTIONS (action_mask is None): {tot_ler/episodes}')
 
-# print(f'Detectors: {dets.shape} (should be {len(circuit.get_detector_coordinates())})\n{dets[:,0]}')
-# print(f'OBSERVATIONS: {obs_final.shape}\n{obs_final}')
-# print("prefix DETs =", env._cnt(env.prefix))   # expect 4
-# print("suffix DETs =", env._cnt(env.suffix))   # expect 4
-stage1_ckpt_path = "ppo_decoder_stage1_noiseless.pt"
 
+
+if __name__=='__main__':
+    episodes=300
+    d_in=9
+    env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
+
+    agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
+    ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
+    agent.load_state_dict(ckpt["policy_state_dict"])
+    base_seed=1234
+    eval_seed=4321
+    print("Loaded Stage-1 policy + backbone weights.")
+    optim_groups = [
+        {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
+        {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-3},
+        {"name": "backbone","params": agent.backbone.parameters(),      "lr": 3e-4},
+    ]
+
+    optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
+    train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed)
+    eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
+    evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total)
+
+
+'''Save Stage 1 policy'''
+# stage1_ckpt_path = "ppo_decoder_stage1_noiseless.pt"
 # torch.save(
 #     {
 #         "policy_state_dict": agent.state_dict(),
@@ -878,23 +874,18 @@ stage1_ckpt_path = "ppo_decoder_stage1_noiseless.pt"
 # )
 # print("Saved Stage-1 checkpoint to", stage1_ckpt_path)
 
-SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
 
-list_with_syndromes_per_round=[]
+
+'''Find syndrome for each round'''
+#SxRxD = det_syndrome_tensor(dets, slices)  # (S, R, 8)
+#list_with_syndromes_per_round=[]
 # print('Syndrome for each round')
 # for r in range(env.R):
 #     dets_round=det_for_round(SxRxD, r)
 #     list_with_syndromes_per_round.append(dets_round)
 #     print(f'\tr={r} -> {dets_round}')
+#syndrome=torch.from_numpy(SxRxD).float().cuda() 
 
-
-
-
-
-
-syndrome=torch.from_numpy(SxRxD).float().cuda() 
-
-# compute advantages & update PPO
 
 
 
