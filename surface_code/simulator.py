@@ -397,7 +397,8 @@ def generate_M2(seed=None, S:int=1024):
     stats=measure_m2_mask_stats(M2_local)
 
     cnt = stats["per_shot_counts"]            # from the meter we made
-    print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
+  #
+  #   print("mean", cnt.mean(), "var", cnt.var(), "Fano", cnt.var()/max(1e-9,cnt.mean()))
 
 
     return M2_local, stats
@@ -575,9 +576,8 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
     entropy_coefs=[]
     best_ler = float("inf")
     check_time = time.strftime("%H:%M", time.localtime(time.time()))
-
+    min_advs,max_advs,min_rets,max_rets,mean_corr_per_shot, noise_scalar_sum, fano_0, fano_1, fano_2=[],[],[],[],[],[],[],[],[]
     kl_stop=0.020
-
 
     tot_ler=0
     done_mask=torch.tensor(1.0)
@@ -595,15 +595,19 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
         M2_local, stats_M2=generate_M2(seed=rng_seed)
 
         noise_summary=summarize_noise(stats_M0=stats_M0, stats_M1=stats_M1, stats_M2=stats_M2)
-        noise_scalar = noise_summary["noise_level_scalar"]
-        print(f'Noise summary \n\t-noise scalar: {noise_scalar}\n\tfano M0:{ noise_summary["M0"]["fano"]}\tfano M1:{ noise_summary["M1"]["fano"]}\tfano M2:{ noise_summary["M2"]["fano"]}')
+        noise_scalar=noise_summary["noise_level_scalar"]
+        noise_scalar_sum.append(noise_scalar)
+        fano_0.append(noise_summary["M0"]["fano"])
+        fano_1.append(noise_summary["M1"]["fano"])
+        fano_2.append(noise_summary["M2"]["fano"])
+      #  print(f'Noise summary \n\t-noise scalar: {noise_scalar}\n\tfano M0:{ noise_summary["M0"]["fano"]}\tfano M1:{ noise_summary["M1"]["fano"]}\tfano M2:{ noise_summary["M2"]["fano"]}')
         obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
         obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
         agent.begin_episode(B, device=device)
         buf = RolloutBuffer(obs_dim=9)  # store per-step data
         buf.reset()
 
-        if ep==0: print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
+     #   if ep==0: print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
         stats_act = {"X": 0, "Z": 0}
 
         pos_frac_ep=[]
@@ -668,8 +672,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
             '''
         
             obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
-            if t==0:
-                print(f'obs fired!: {obs_current.shape}\n {obs_current.sum()}')
+           
             r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current, nx=nx, nz=nz)
             last_action=gate
             feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
@@ -677,9 +680,9 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
             feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
                         feature_vector.std(dim=0, keepdim=True) + 1e-6)
 
-            if t==int(env.R/2):
-                print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}, zeros -> {(r_step==0).sum()}')
-                print(f'Reward: {r_step}')
+            # if t==int(env.R/2):
+            #     print(f'We got \n\tpositive reward? -> {(r_step>0).sum()} \n\tnegative reward? -> {(r_step<0).sum()}, zeros -> {(r_step==0).sum()}')
+            #     print(f'Reward: {r_step}')
 
             obs_prev_np=obs_current
             pos_frac_ep.append((r_step > 0).mean())
@@ -730,7 +733,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
 
         # average over rounds
         avg = {k: np.mean([m[k] for m in all_metrics]) for k in all_metrics[0]}
-        print("\nepisode over-corr:\n", avg)
+       # print("\nepisode over-corr:\n", avg)
         no_impr=avg['no_improve_rate']
         eff=avg["eff_act"]
         act_rate=avg["act_rate"]
@@ -755,7 +758,9 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
 
         ler=logical_error_rate(S, obs_final)
         lers.append(ler)
-        print(f'LER: {ler}')
+        cfg_run={"alpha": 0.2, "beta":0.05,"marginal":0.001, "episodes":episodes,
+                 "clip_eps":0.04, "epochs":2,"ent_coef":3e-3 , "adjustable_ler":0}
+
         # ler is a scalar float, e.g. logical error rate for this episode
         if float(ler) < float(best_ler):
             best_ler = ler
@@ -768,7 +773,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
                 {"agent": agent.state_dict(),
                 "episode": ep,
                 "noise_scalar": noise_scalar,
-
+                "cfg":cfg_run,
                 "ler": best_ler},
                 best_ckpt_path,
             )
@@ -804,6 +809,15 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
         evs.append(stats["ev"])
 
         tot_ler+=ler
+        min_advs.append(advs.min().item())
+        max_advs.append(advs.max().item())
+        min_rets.append(rets.min().item())
+        max_rets.append(rets.max().item())
+        total_actions = (B * env.R) if env.R is not None else max(1, B)  # fallback
+        x_cnt = int(stats_act.get("X", 0))
+        z_cnt = int(stats_act.get("Z", 0))
+        noop = max(0, total_actions - (x_cnt + z_cnt))
+        mean_corr_per_shot.append((x_cnt + z_cnt) / max(1, B) / max(1, env.R or 1))
 
         summary(ep=ep,buf=buf,  env=env, stats_act=stats_act,
                 s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
@@ -814,16 +828,28 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
             new_lr = set_group_lr(optimizer, "actor", factor=0.9)
             if new_lr is not None:
                 print(f"[tune] KL={kl:.4f} > {kl_stop} → actor lr ↓ to {new_lr:.2e}")
-            # elif kl < 0.010:
+        #     # elif kl < 0.010:
             #     new_lr = set_group_lr(optimizer, "actor", factor=1.1)
 
 
 
 
    # summarize_episode(all_action_masks=all_action_masks, observables=obs_final)
-
-
-
+    min_advs=np.array(min_advs)
+    max_advs=np.array(max_advs)
+    min_rets=np.array(min_rets)
+    max_rets=np.array(max_rets)
+    mean_corr_per_shot=np.array(mean_corr_per_shot)
+    fano_2=np.array(fano_2)
+    fano_0=np.array(fano_0)
+    fano_1=np.array(fano_1)
+    noise_scalar_sum=np.array(noise_scalar_sum)
+    print(f'\n\n===================[SUMMARY of {episodes} EPISODES]=======================')
+    print(f'\tMIN ADVS MEAN: {min_advs.mean()} - MAX ADVS MEAN {max_advs.mean()}\tMIN RETS MEAN {max_rets.mean()} - MAX RETS MEAN {max_rets.mean()} ')
+    print(f'\tMEAN CORRECTIONS PER SHOT {mean_corr_per_shot.mean()}')
+    print(f'\tMEAN NOISE SCALAR: {noise_scalar_sum.mean()}')
+    print(f'\tMEAN FANO OF M0: {fano_0.mean()}\tMEAN FANO OF M1: {fano_1.mean()}\tMEAN FANO OF M2: {fano_2.mean()}')
+    print('===========================================================================')
 
     # analyze_decoding_stats(dets, obs_final, MR, M0=M0_local, M1=M1_local, M2=M2_local, rounds=rounds, ancillas=len(anchs), circuit=circuit, slices=slices)
     plot_LERvsSTEPS(lers)
@@ -831,7 +857,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
     plot_ev_kl_entropy(ev=evs,kl=kls,entropy=entropies)
     plot_coef(coefs=entropy_coefs)
     plot_loss_v_pi(v=losses_v, pi=losses_p)
-    plot_LER_rstep_finalr(ler=lers, r_step=raw_rewards_list, finals=final_rewards)
+    plot_LER_rstep_finalr(ler=lers, r_step=raw_rewards_list, finals=np.clip(final_rewards, -1,+1))
     plot_effectiveness(eff=effective, no_improve=no_improve, act=act, idle=idle)
     DET_by_round = split_DET_by_round(dets, slices)
 
@@ -839,24 +865,35 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
 
 
 if __name__=='__main__':
-    episodes=300
+    episodes=310
     d_in=9
     env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
     agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
-    ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
-    agent.load_state_dict(ckpt["policy_state_dict"])
+    # ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
+    # agent.load_state_dict(ckpt["policy_state_dict"])
+    ckpt = torch.load("stage2_best_ler_0.0029296875_17:43.pt", map_location=device)
+    agent.load_state_dict(ckpt["agent"])
     base_seed=1234
     eval_seed=4321
-    print("Loaded Stage-1 policy + backbone weights.")
-    optim_groups = [
-        {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
-        {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-3},
-        {"name": "backbone","params": agent.backbone.parameters(),      "lr": 3e-4},
-    ]
+    # print("Loaded Stage-1 policy + backbone weights.")
+    # optim_groups = [
+    #     {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
+    #     {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-3},
+    #     {"name": "backbone","params": agent.backbone.parameters(),      "lr": 3e-4},
+    # ]
 
-    optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
-    train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed)
+    # optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
+    # params=optimizer.param_groups
+    # for g in params:
+
+    #     print(f'Before training the lr is: {g.get("name")}  -  {g["lr"]}')
+
+    # train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed)
+    # params=optimizer.param_groups
+    # for g in params:
+
+    #     print(f'After training the lr is: {g.get("name")}  -  {g["lr"]}')
     eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
     evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total)
 

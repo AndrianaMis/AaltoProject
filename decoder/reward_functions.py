@@ -113,7 +113,7 @@ def round_overcorr_metrics_discrete(det_prev, det_now, nx, nz):
 
 
 
-ALPHA_CLEAR   = 0.25  # reward per bit cleared
+ALPHA_CLEAR   = 0.2  # reward per bit cleared
 BETA_PENALTY  = 0.05  # penalty per active bit
 LAMBDA_FLIP   = 1e-3  # small penalty per flip (start tiny!)
 BUDGET_K      = 1     # allow up to k flips “free-ish” per round

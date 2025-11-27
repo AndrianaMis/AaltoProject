@@ -16,12 +16,12 @@ def evaal(ids, seed:int, env:StimDecoderEnv, device, agent:DecoderAgent, S:int, 
     lers=[]
     noises=[]
     ep=0
+
     for id in ids:
         rng_seed_reuse=int(id)+seed  #should be seeds that have been used to create a  subset of masks that the agent has seen before
         M0_local, stats_M0=generate_M0(seed=rng_seed_reuse)
         M1_local, stats_M1=generate_M1(seed=rng_seed_reuse)
         M2_local, stats_M2=generate_M2(seed=rng_seed_reuse)
-        print(f'\n--Noise Stats--')
         noise_summary=summarize_noise(stats_M0=stats_M0, stats_M1=stats_M1, stats_M2=stats_M2)
         noise_scalar = noise_summary["noise_level_scalar"]
 
@@ -57,7 +57,7 @@ def evaal(ids, seed:int, env:StimDecoderEnv, device, agent:DecoderAgent, S:int, 
 
         lers.append(ler)
         noises.append(noise_scalar)
-        print(f'EP: [{ep}] ->  LER: {ler}  Noise scalar: {noise_scalar}  Seed: {id}')
+        print(f'EP: [{ep}] ->  LER: {ler}  Noise scalar: {noise_scalar}  Seed: {rng_seed_reuse}')
         ep+=1
 
     lers=np.array(lers)
