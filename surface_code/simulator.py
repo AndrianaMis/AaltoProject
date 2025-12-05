@@ -22,6 +22,7 @@ from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends, plot_ev_kl_e
 import time
 import os
 import surface_code.evaulate as evaluate
+import decoder.reward_functions as rewards
 # Generate the rotated surface code circuit:
 distance = 3
 rounds = 10
@@ -558,7 +559,7 @@ find_neighboring_qubits(det_coords=round_det_coords, data_ids=data_ids, data_coo
 
 
 def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
-                    optimizer, base_seed:int=1234):
+                    optimizer, obs_dim,base_seed:int=1234):
     pos_frac=[]
     neg_frac=[]
     losses_v=[]
@@ -577,7 +578,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
     best_ler = float("inf")
     check_time = time.strftime("%H:%M", time.localtime(time.time()))
     min_advs,max_advs,min_rets,max_rets,mean_corr_per_shot, noise_scalar_sum, fano_0, fano_1, fano_2=[],[],[],[],[],[],[],[],[]
-    kl_stop=0.020
+    kl_stop=0.05
 
     tot_ler=0
     done_mask=torch.tensor(1.0)
@@ -596,15 +597,17 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
 
         noise_summary=summarize_noise(stats_M0=stats_M0, stats_M1=stats_M1, stats_M2=stats_M2)
         noise_scalar=noise_summary["noise_level_scalar"]
+        #print(f'Noise summary \n\t-noise scalar: {noise_scalar}\n\tfano M0:{ noise_summary["M0"]["fano"]}\tfano M1:{ noise_summary["M1"]["fano"]}\tfano M2:{ noise_summary["M2"]["fano"]}')
         noise_scalar_sum.append(noise_scalar)
         fano_0.append(noise_summary["M0"]["fano"])
         fano_1.append(noise_summary["M1"]["fano"])
         fano_2.append(noise_summary["M2"]["fano"])
+
       #  print(f'Noise summary \n\t-noise scalar: {noise_scalar}\n\tfano M0:{ noise_summary["M0"]["fano"]}\tfano M1:{ noise_summary["M1"]["fano"]}\tfano M2:{ noise_summary["M2"]["fano"]}')
         obs = env.reset(M0_local, M1_local, M2_local)   # (S, 8) zeros
         obs = torch.from_numpy(obs).float().to(device)  # (B, 8)
         agent.begin_episode(B, device=device)
-        buf = RolloutBuffer(obs_dim=9)  # store per-step data
+        buf = RolloutBuffer(obs_dim=obs_dim)  # store per-step data
         buf.reset()
 
      #   if ep==0: print(f'\n\n--------Shapes & Init Check---------------\n\tM0_local: {M0_local.shape}\n\tM1_local: {M1_local.shape}\n\tM2_local: {M2_local.shape}\n\tB: {B}\n\tDevice: {device}\n\tQ_total:{Q_total}\n\tobs shape: {obs.shape}\t obs dim: {obs.shape[1]}\n--------------------------------------------\n')
@@ -625,8 +628,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
                         feature_vector.std(dim=0, keepdim=True) + 1e-6)
         nx_rounds=[]
         nz_rounds=[]
-
-
+        r_steps=[]
     #   print(f'\tFeature vector should have very small values and is of shape: {feature_vector.shape}\n: random shot 500:\n{feature_vector[500,:]} ')
         for t in range(env.R):   # R = 9
 
@@ -674,8 +676,11 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
             obs_current, done = env.step_inject( action_mask=action_mask )  # returns (S, 8), bool
            
             r_step=step_reward(obs_prev_round=obs_prev_np, obs_round=obs_current, nx=nx, nz=nz)
+            r_steps.append(r_step)
             last_action=gate
             feature_vector=encode_obs(obs_curr=obs_current, obs_prev=obs_prev_np, last_action=gate, round_idx=t, total_rounds=env.R)
+            
+            
             feature_vector = torch.from_numpy(feature_vector).float().to(device)  # (B, 9)
             feature_vector = (feature_vector - feature_vector.mean(dim=0, keepdim=True)) / (
                         feature_vector.std(dim=0, keepdim=True) + 1e-6)
@@ -689,14 +694,13 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
             neg_frac_ep.append((r_step < 0).mean())
             all_action_masks.append(action_mask)
             
-
             '''Update buffer, compute GAE'''
 
             obs_c_tensor=torch.from_numpy(obs_current).float().to(device)
             r_step_tensor=torch.from_numpy(r_step).float().to(device)
             r_step_tensor = torch.nan_to_num(r_step_tensor, nan=0.0, posinf=0.0, neginf=0.0)
             # (optional) clip tiny range first days
-            r_step_tensor = torch.clamp(r_step_tensor, -1.0, 1.0)
+          #  r_step_tensor = torch.clamp(r_step_tensor, -2.0, 2.0)
         #  if ep==5: print(f'step reward: {r_step}')
 
             done_bool = (t == env.R - 1)          # shape: scalar bool
@@ -716,7 +720,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
         final_rew=final_reward(obs_flips=obs_final)
         final_rew_tensor = torch.as_tensor(final_rew, dtype=torch.float32, device=device)
         final_rew_tensor = torch.nan_to_num(final_rew_tensor, nan=0.0, posinf=0.0, neginf=0.0)
-        final_rew_tensor = torch.clamp(final_rew_tensor, -1.0, 1.0)         #oxi gia pnta
+        #final_rew_tensor = torch.clamp(final_rew_tensor, -1.0, 1.0)         #oxi gia pnta
         buf.rewards[-1] = buf.rewards[-1] + final_rew_tensor
 
         det_count=np.stack([dets[a:b, :].sum(axis=0) for (a, b) in slices], axis=0)
@@ -742,6 +746,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
         effective.append(eff)
         act.append(act_rate)
         idle.append(idle_rate)
+
         # corrs.plot_intraround_corr_heatmaps(dets, slices, max_rounds=6)
         # corrs.make_Crr_heatmaps(M0=M0_local, M1=M1_local, M2=M2_local, DET=dets, MR=MR, R=rounds, A=len(anc_ids))
 
@@ -758,8 +763,13 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
 
         ler=logical_error_rate(S, obs_final)
         lers.append(ler)
-        cfg_run={"alpha": 0.2, "beta":0.05,"marginal":0.001, "episodes":episodes,
-                 "clip_eps":0.04, "epochs":2,"ent_coef":3e-3 , "adjustable_ler":0}
+
+
+        bacth_size=4096
+        epos=1
+        rewards_knobs={"alpha":rewards.ALPHA_CLEAR, "beta": rewards.BETA_PENALTY, "l_flip":rewards.LAMBDA_FLIP, "l_exc":rewards.LAMBDA_EXCESS, "budget":rewards.BUDGET_K}
+        cfg_run={"reward_knobs":rewards_knobs, "marginal":0.001, "episodes":episodes,
+                 "clip_eps":0.04, "epochs":epos,"ent_coef":3e-3 , "adjustable_lr":1, "kl_stop":kl_stop, "batches":bacth_size}
 
         # ler is a scalar float, e.g. logical error rate for this episode
         if float(ler) < float(best_ler):
@@ -782,10 +792,10 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
 
 
 
-
+        """changed!!!!!11   epochs:2 batch:2048"""
         #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
         stats = optimize_ppo(agent, buf, optimizer,
-                        clip_eps=0.04, epochs=2, batch_size=2048,
+                        clip_eps=0.04, epochs=epos, batch_size=bacth_size,
                         entropy_coef=3e-3, entropy_coef_min=1e-4,
                         update_idx=ep, total_updates=episodes, progress=progress)
         ent_coef=stats["entropy_coef_used"]
@@ -818,9 +828,9 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
         z_cnt = int(stats_act.get("Z", 0))
         noop = max(0, total_actions - (x_cnt + z_cnt))
         mean_corr_per_shot.append((x_cnt + z_cnt) / max(1, B) / max(1, env.R or 1))
-
+        r_steps=np.array(r_steps)
         summary(ep=ep,buf=buf,  env=env, stats_act=stats_act,
-                s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
+                s=stats, ler=ler, advs=advs, rets=rets, R=env.R, B=B,raw_rewards=r_steps, dets=dets, slices=slices, MR=MR, all_action_masks=all_action_masks )
 
     ##We are optimize and tubnig the learning rate of the actor 
         kl = stats["kl"]
@@ -862,41 +872,85 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
     DET_by_round = split_DET_by_round(dets, slices)
 
 
+def eval_agent_fixed_seeds(seeds, env):
+    lers, noises = [], []
+    for sid in seeds:
+        M0, stats_M0 = generate_M0(seed=sid)
+        M1, stats_M1 = generate_M1(seed=sid)
+        M2, stats_M2 = generate_M2(seed=sid)
+        noise_summary = summarize_noise(stats_M0, stats_M1, stats_M2)
+        noise_scalar  = noise_summary["noise_level_scalar"]
 
+        env.reset(M0, M1, M2)
+
+        # just run the rounds with no corrections
+        for r in range(env.R):
+            obs_r, done = env.step_inject(action_mask=None)
+
+        dets, MR, obs_final, reward_terminal = env.finish_measure()
+        ler = logical_error_rate(env.S, obs_final)
+
+        lers.append(ler)
+        noises.append(noise_scalar)
+        print(f"seed {sid}: LER={ler:.5f}, noise={noise_scalar:.5e}")
+
+    # summary
+    lers = np.array(lers); noises = np.array(noises)
+    print("\n===== NO-ACTION BASELINE =====")
+    print(f"LER mean={lers.mean():.5f} std={lers.std():.5f}")
+    print(f"LER min={lers.min():.5f} max={lers.max():.5f}")
+    print(f"noise mean={noises.mean():.5f}")
+    print("================================\n")
 
 if __name__=='__main__':
-    episodes=310
+    episodes=200
     d_in=9
     env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
-    agent=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
-    # ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
-    # agent.load_state_dict(ckpt["policy_state_dict"])
-    ckpt = torch.load("stage2_best_ler_0.0029296875_17:43.pt", map_location=device)
-    agent.load_state_dict(ckpt["agent"])
+    agent=DecoderAgent(d_in=d_in, n_actions=2*len(data_qus) +1).to(device)
+    ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
+    agent.load_state_dict(ckpt["policy_state_dict"])
+    # ckpt = torch.load("stage2_best_ler_0.0029296875_12:20.pt", map_location=device)
+    # agent.load_state_dict(ckpt["agent"])
     base_seed=1234
     eval_seed=4321
-    # print("Loaded Stage-1 policy + backbone weights.")
+    print("Loaded Stage-1 policy + backbone weights.")
+    optim_groups = [
+        {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
+        {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-3},
+        {"name": "backbone","params": agent.backbone.parameters(),      "lr": 3e-4},
+    ]
+
+
+    # '''changed!!!!!!!'''
     # optim_groups = [
-    #     {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
-    #     {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-3},
-    #     {"name": "backbone","params": agent.backbone.parameters(),      "lr": 3e-4},
+    # # Actor: Start lower (1e-4 or 5e-5) to prevent early collapse
+    #     {"name": "actor",    "params": agent.heads.pi.parameters(), "lr": 1e-4}, 
+        
+    #     # Critic: Can be higher, 5e-4 is usually sufficient
+    #     {"name": "critic",   "params": agent.heads.v.parameters(),  "lr": 5e-4},
+        
+    #     # Backbone: Needs to be stable. 1e-4 is safer than 3e-4.
+    #     {"name": "backbone", "params": agent.backbone.parameters(), "lr": 1e-4},
     # ]
+    optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
 
-    # optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
-    # params=optimizer.param_groups
-    # for g in params:
 
-    #     print(f'Before training the lr is: {g.get("name")}  -  {g["lr"]}')
+    train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed, obs_dim=d_in)    #with action
 
-    # train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed)
-    # params=optimizer.param_groups
-    # for g in params:
+    
+    # eval_agent_noop=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
+    # eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
 
-    #     print(f'After training the lr is: {g.get("name")}  -  {g["lr"]}')
-    eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
-    evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total)
+    # evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total)
 
+
+    '''RUN NO ACTION + ACTION EVALUTAION'''
+    # eval_seeds = [7,12,33,40,41,3,24,18,29,50,60,61,77,101]
+
+    # eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
+    # eval_agent_fixed_seeds(seeds=eval_seeds, env=eval_env)
+    # evaluate.evaal(ids=eval_seeds, seed=0, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total, strr="fixed-action")
 
 '''Save Stage 1 policy'''
 # stage1_ckpt_path = "ppo_decoder_stage1_noiseless.pt"

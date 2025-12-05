@@ -303,7 +303,7 @@ def mask_generator_M2(gates: list[tuple[int,int]], rounds:int, cfg, actives_list
     c3=False
     c4=False
     if cfg["t1"]["enabled"]:
-        M2, clusters= m2_t1_same_round_bursts(m=M2, E=len(gates), R=rounds, p_start= cfg["t1"]["p_start"] , rng_seed=seed, rng=rng)
+        M2, clusters= m2_t1_same_round_bursts(m=M2, E=len(gates), R=rounds, p_start= cfg["t1"]["p_start"] , rng_seed=seed, rng=rng, burst_gates_max=cfg["t1"]["G_max"], burst_gates_min=cfg["t1"]["G_min"])
         # print('\n')
         # for event in clusters:
 
@@ -313,7 +313,7 @@ def mask_generator_M2(gates: list[tuple[int,int]], rounds:int, cfg, actives_list
             c1=True
    
     if cfg["t2"]["enabled"]:
-        M2, streaks= m2_t2_per_gate_streaks(m=M2, E=E, R=rounds, p_start=cfg["t2"]["p_start"], rng_seed=seed, rng=rng)
+        M2, streaks= m2_t2_per_gate_streaks(m=M2, E=E, R=rounds, p_start=cfg["t2"]["p_start"], rng_seed=seed, rng=rng, gamma=cfg["t2"]["gamma"])
         # print('\n')
         # for streak in streaks:
         #    print(f'Event---Streak: {streak}')
@@ -322,10 +322,10 @@ def mask_generator_M2(gates: list[tuple[int,int]], rounds:int, cfg, actives_list
             c2=True
     if cfg["t3"]["enabled"]:
         if not c1:
-            M2, clusters= m2_t1_same_round_bursts(m=M2, E=len(gates), R=rounds, p_start= cfg["t1"]["p_start"] , rng_seed=seed, rng=rng)
+            M2, clusters= m2_t1_same_round_bursts(m=M2, E=len(gates), R=rounds, p_start= cfg["t1"]["p_start"] , rng_seed=seed, rng=rng, burst_gates_max=cfg["t1"]["G_max"], burst_gates_min=cfg["t1"]["G_min"])
             c1=c1 or len(clusters)>0
         if c1:
-            M2, streaks3=m2_t3_cluster_ext(m=M2, E=len(gates), clusters=clusters, R=rounds, p_start=cfg["t3"]["p_start"], rng_seed=seed, rng=rng)     #< print("greeks are very racist")
+            M2, streaks3=m2_t3_cluster_ext(m=M2, E=len(gates), clusters=clusters, R=rounds, p_start=cfg["t3"]["p_start"], rng_seed=seed, rng=rng, gamma=cfg["t3"]["gamma"])     #< print("greeks are very racist")
             # print(f'{len(clusters)} clusters\n')
             # for st in streaks3:
             #     r,gate, rs, pairs=st

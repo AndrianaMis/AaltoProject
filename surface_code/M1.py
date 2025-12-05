@@ -520,7 +520,7 @@ def mask_generator_M1(qubits:int, rounds:int, qubits_ind: List, cfg, actives_lis
             p_start=cfg["t4"]["p_start"], gamma=cfg["t4"]["gamma"],
             qset_min=cfg["t4"]["qset_min"], qset_max=cfg["t4"]["qset_max"],
             disjoint_qubit_groups=cfg["t4"]["disjoint_qubit_groups"],
-            fY=fY , rng_seed=seed   ,rng=rng                                   # << pass fY
+            fY=fY , rng_seed=seed   ,rng=rng  ,k_max=cfg["t4"]["qset_max"]    ,k_min=cfg["t4"]["qset_min"]                             # << pass fY
         )
         c4 = len(events4) > 0
     else:

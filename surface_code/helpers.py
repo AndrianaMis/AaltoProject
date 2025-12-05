@@ -557,11 +557,20 @@ def to_numpy(x):
 
 def encode_obs(obs_curr, obs_prev, last_action, round_idx, total_rounds, pca_proj=None):
     S, n_det = obs_curr.shape
-    obs_curr = to_numpy(obs_curr)
-    obs_prev = to_numpy(obs_prev)
+    
+    # 1. Force cast to float32 to avoid uint8 underflow
+    obs_curr = to_numpy(obs_curr).astype(np.float32)
+    
+    if obs_prev is None:
+        obs_prev = np.zeros_like(obs_curr, dtype=np.float32)
+    else:
+        obs_prev = to_numpy(obs_prev).astype(np.float32)
+
     last_action = to_numpy(last_action)
 
-    
+    # 2. Now subtraction works correctly (-1.0, 0.0, 1.0)
+    syndrome_diff = obs_curr - obs_prev
+   # print(f'Syndrome diff: {syndrome_diff.shape} \n {syndrome_diff}')
     curr_sum = obs_curr.sum(axis=1, keepdims=True)
     prev_sum = np.zeros_like(curr_sum) if obs_prev is None else obs_prev.sum(axis=1, keepdims=True)
     cleared  = np.zeros_like(curr_sum) if obs_prev is None else ((obs_prev == 1) & (obs_curr == 0)).sum(axis=1, keepdims=True)
@@ -582,12 +591,80 @@ def encode_obs(obs_curr, obs_prev, last_action, round_idx, total_rounds, pca_pro
     else:
         det_feat = obs_curr.mean(axis=1, keepdims=True)  # simple fallback
 
+
+
+    features = np.concatenate([det_feat, last_act_oh, round_frac], axis=1)
+# --- CONCATENATE EVERYTHING ---
+    # We pass the RAW detectors + the DIFFERENCE
+    # Shape: (S, n_det + n_det + 3 + 1)
+    # For d=3 (8 dets): 8 + 8 + 3 + 1 = 20 input features. Very manageable.
+
     features = np.concatenate([curr_sum, prev_sum, cleared, new_fire, round_frac, last_act_oh, det_feat], axis=1)
+
     return features.astype(np.float32)
 
+# def encode_obs(obs_curr, obs_prev, last_action, round_idx, total_rounds):
+#     """
+#     obs_curr: (S, n_det) 0/1 detector events this round
+#     obs_prev: (S, n_det) or None
+#     last_action: scalar in {0,1,2} or array/tensor of shape (S,)
+#     """
+#     # ----- shapes & casting -----
+#     obs_curr = to_numpy(obs_curr).astype(np.float32)
+#     S, n_det = obs_curr.shape
+
+#     if obs_prev is None:
+#         obs_prev = np.zeros_like(obs_curr, dtype=np.float32)
+#     else:
+#         obs_prev = to_numpy(obs_prev).astype(np.float32)
+
+#     # ----- handle last_action robustly -----
+#     # Could be int, np array, or torch tensor
+#     if isinstance(last_action, torch.Tensor):
+#         last_action = last_action.detach().cpu().numpy()
+
+#     # Now last_action is either scalar or np.ndarray
+#     if np.isscalar(last_action):
+#         # broadcast scalar to all shots
+#         last_action = np.full((S,), int(last_action), dtype=int)
+#     else:
+#         last_action = np.asarray(last_action, dtype=int).reshape(S,)
+
+#     # ----- raw + diff -----
+#     syndrome_diff = obs_curr - obs_prev               # (S, n_det), in {-1,0,1}
+
+#     # ----- simple counts (what helped Stage-1) -----
+#     curr_sum = obs_curr.sum(axis=1, keepdims=True)    # how many fired now
+#     cleared  = ((obs_prev == 1) & (obs_curr == 0)).sum(axis=1, keepdims=True)
+#     new_fire = ((obs_prev == 0) & (obs_curr == 1)).sum(axis=1, keepdims=True)
+#     any_fired = (curr_sum > 0).astype(np.float32)     # (S,1)
+
+#     # ----- time context -----
+#     round_frac = np.full((S, 1), round_idx / total_rounds, dtype=np.float32)
+
+#     # ----- last action gate (no need for qubit index here) -----
+#     last_act_oh = np.zeros((S, 3), dtype=np.float32)  # [I,X,Z]
+#     last_act_oh[np.arange(S), last_action] = 1.0
+
+#     # ----- final feature vector -----
+#     features = np.concatenate(
+#         [
+#             obs_curr,      # (S, n_det)
+#             syndrome_diff, # (S, n_det)
+#             curr_sum,      # (S,1)
+#             cleared,       # (S,1)
+#             new_fire,      # (S,1)
+#             any_fired,     # (S,1)
+#             last_act_oh,   # (S,3)
+#             round_frac,    # (S,1)
+#         ],
+#         axis=1,
+#     ).astype(np.float32)
+
+#     return features
 
 
-
+"""changed!!!!!!!!! min_lr was 1e-4 max 6e-4"""
 def set_group_lr(optimizer, name, *, factor=None, value=None,
                  min_lr=1e-4, max_lr=6e-4):
     for g in optimizer.param_groups:
@@ -621,6 +698,7 @@ def summary(
     rets,
     R,
     B,
+    raw_rewards,
     # Optional diagnostics (pass if available)
     dets: np.ndarray = None,   # detector bits, shape (N_det_total, B) or (B, N_det_total)
     slices: list = None,       # list of (start, end) per-round detector row slices
@@ -630,7 +708,7 @@ def summary(
 
 
     #Step rowards stats
-    raw_rewards = torch.stack(buf.rewards, dim=0)  # (T, B)
+    raw_rewards = torch.from_numpy(raw_rewards)  # (T, B)
     raw_step_mean = raw_rewards.mean().item()
     raw_step_min  = raw_rewards.min().item()
     raw_step_max  = raw_rewards.max().item()

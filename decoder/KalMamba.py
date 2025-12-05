@@ -131,6 +131,7 @@ from dataclasses import dataclass
 
 @dataclass
 class RolloutConfig:
+    '''changed!!! was 0.99'''
     gamma: float = 0.99
     gae_lambda: float = 0.95
 
@@ -431,7 +432,7 @@ def optimize_ppo(
     update_idx: int | None = None,
     total_updates: int | None = None,
     entropy_coef_min: float = 1e-4,
-    kl_stop: float = 0.015,              # NEW: early-stop threshold per epoch
+    kl_stop: float = 0.03,              # NEW: early-stop threshold per epoch
     progress:float
 ):
     import math
@@ -446,7 +447,8 @@ def optimize_ppo(
     #     entropy_coef_t = entropy_coef_min + (entropy_coef - entropy_coef_min) * cos_w
     # else:
     #     entropy_coef_t = entropy_coef
-
+    '''stage1'''
+    #ent_coef=entropy_coef
     ent_coef=get_entropy_coef(progress=progress, ent0=entropy_coef, ent_final=entropy_coef_min)
 
 
