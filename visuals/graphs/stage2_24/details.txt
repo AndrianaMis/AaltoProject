@@ -1,0 +1,15 @@
+IN this one i followed three steps:
+
+1. leraning rate was:
+    # optim_groups = [
+    # # Actor: Start lower (1e-4 or 5e-5) to prevent early collapse
+    #     {"name": "actor",    "params": agent.heads.pi.parameters(), "lr": 2e-4}, 
+        
+    #     # Critic: Can be higher, 5e-4 is usually sufficient
+    #     {"name": "critic",   "params": agent.heads.v.parameters(),  "lr": 1e-3},
+        
+    #     # Backbone: Needs to be stable. 1e-4 is safer than 3e-4.
+    #     {"name": "backbone", "params": agent.backbone.parameters(), "lr": 3e-4},
+    # ]
+
+2.  ppo parameters: clip_eps=0.03 , ent0=0.0015, ent_final=5e-4 , 

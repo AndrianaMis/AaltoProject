@@ -578,7 +578,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
     best_ler = float("inf")
     check_time = time.strftime("%H:%M", time.localtime(time.time()))
     min_advs,max_advs,min_rets,max_rets,mean_corr_per_shot, noise_scalar_sum, fano_0, fano_1, fano_2=[],[],[],[],[],[],[],[],[]
-    kl_stop=0.05
+    kl_stop=0.03
 
     tot_ler=0
     done_mask=torch.tensor(1.0)
@@ -765,7 +765,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
         lers.append(ler)
 
 
-        bacth_size=4096
+        bacth_size=2048
         epos=1
         rewards_knobs={"alpha":rewards.ALPHA_CLEAR, "beta": rewards.BETA_PENALTY, "l_flip":rewards.LAMBDA_FLIP, "l_exc":rewards.LAMBDA_EXCESS, "budget":rewards.BUDGET_K}
         cfg_run={"reward_knobs":rewards_knobs, "marginal":0.001, "episodes":episodes,
@@ -903,18 +903,19 @@ def eval_agent_fixed_seeds(seeds, env):
     print("================================\n")
 
 if __name__=='__main__':
-    episodes=200
+    episodes=300
     d_in=9
     env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
     agent=DecoderAgent(d_in=d_in, n_actions=2*len(data_qus) +1).to(device)
-    ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
-    agent.load_state_dict(ckpt["policy_state_dict"])
-    # ckpt = torch.load("stage2_best_ler_0.0029296875_12:20.pt", map_location=device)
-    # agent.load_state_dict(ckpt["agent"])
+    # ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
+    # agent.load_state_dict(ckpt["policy_state_dict"])
+    ckpt = torch.load("backups/stage2_best.pt", map_location=device)
+    agent.load_state_dict(ckpt["agent"])
     base_seed=1234
     eval_seed=4321
-    print("Loaded Stage-1 policy + backbone weights.")
+    #print("Loaded Stage-1 policy + backbone weights.")
+    print(f'Loaded Stage 2 policy with minimal LER: {ckpt["ler"]}')
     optim_groups = [
         {"name": "actor",   "params": agent.heads.pi.parameters(),      "lr": 6e-4},
         {"name": "critic",  "params": agent.heads.v.parameters(),       "lr": 1e-3},
@@ -922,27 +923,27 @@ if __name__=='__main__':
     ]
 
 
-    # '''changed!!!!!!!'''
+    '''changed!!!!!!!'''
     # optim_groups = [
     # # Actor: Start lower (1e-4 or 5e-5) to prevent early collapse
-    #     {"name": "actor",    "params": agent.heads.pi.parameters(), "lr": 1e-4}, 
+    #     {"name": "actor",    "params": agent.heads.pi.parameters(), "lr": 2e-4}, 
         
     #     # Critic: Can be higher, 5e-4 is usually sufficient
-    #     {"name": "critic",   "params": agent.heads.v.parameters(),  "lr": 5e-4},
+    #     {"name": "critic",   "params": agent.heads.v.parameters(),  "lr": 1e-3},
         
     #     # Backbone: Needs to be stable. 1e-4 is safer than 3e-4.
-    #     {"name": "backbone", "params": agent.backbone.parameters(), "lr": 1e-4},
+    #     {"name": "backbone", "params": agent.backbone.parameters(), "lr": 3e-4},
     # ]
     optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
 
 
-    train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed, obs_dim=d_in)    #with action
+    #train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed, obs_dim=d_in)    #with action
 
     
-    # eval_agent_noop=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
-    # eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
+    eval_agent_noop=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
+    eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
 
-    # evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total)
+    evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total)
 
 
     '''RUN NO ACTION + ACTION EVALUTAION'''
