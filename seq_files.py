@@ -1,3 +1,893 @@
+import torch
+from mamba_ssm import Mamba
+from decoder.decoder_helpers import StimDecoderEnv
+
+
+# B, L, D = 4, 128, 256  # batch, seq, model dim
+# x = torch.randn(B, L, D, device="cuda")
+
+# block = Mamba(d_model=D, d_state=16, d_conv=4, expand=2, use_fast_path=True).cuda()
+# y = block(x)           # shape: (B, L, D)
+# print(y.shape)
+
+import torch.nn as nn
+import torch.utils.checkpoint as cp  # NEW
+
+#x = torch.randn(batch, length, dim).to("cuda") #the thing from the repo
+#so we give (shots,rounds, dets )
+
+
+
+
+class MambaBackbone(nn.Module):
+    def __init__(self, d_in=8, d_model=256, depth=4, use_checkpoint=True):   #d_in=obs size, d_model=latent state size, depth=stacked mamba layerss
+        super().__init__()
+        self.in_proj = nn.Linear(d_in, d_model) #project 
+        self.layers  = nn.ModuleList([Mamba(d_model=d_model, layer_idx=i) for i in range(depth)]) #process through mamba layers
+        self.norm    = nn.LayerNorm(d_model) #normalize
+        self.use_checkpoint = use_checkpoint
+
+    
+    def allocate_cache(self, B):  #technique to create cache with size B=#shots
+        # one cache (conv_state, ssm_state) per layer
+        return [ly.allocate_inference_cache(B, max_seqlen=1) for ly in self.layers]
+
+
+
+
+    def mamba_step_opt(self, x_t, cache=None):     # x_t: (B, 1, d_in)
+        # cache is unused here; you can ignore it in training
+        h = self.in_proj(x_t)                      # (B, 1, d_model)
+        for ly in self.layers:
+            h = ly(h)                              # <- differentiable forward
+        return self.norm(h)  
+
+    '''new for sequencial'''
+    def forward_seq(self, x):   # x: (B, T, d_in)
+        h = self.in_proj(x)     # (B, T, d_model)
+        for ly in self.layers:
+            h = ly(h)           # (B, T, d_model)
+        return self.norm(h)     # (B, T, d_model)
+    
+
+
+    @torch.no_grad()
+    def mamba_step(self, x_t, cache):          # x_t: (B, 1, d_in) single round obs, cache is the hidden states from prevs
+        device = next(self.parameters()).device
+        x_t = x_t.to(device)
+        h = self.in_proj(x_t)
+        for ly, (conv_state, ssm_state) in zip(self.layers, cache):
+            h, _, _ = ly.step(h, conv_state, ssm_state)    # (B, 1, d_model)
+        return self.norm(h)  # (B, 1, d_model)
+
+class PolicyValue(nn.Module):
+    def __init__(self, d_model=128, n_actions=2, squash=False):
+        super().__init__()
+        self.pi = nn.Linear(d_model, n_actions)  # logits for  action encoding
+        self.v  = nn.Linear(d_model, 1)
+    def forward(self, h_t):                      # h_t: (B, d_model), the latent state
+        logits = self.pi(h_t) #policy logitgs
+        
+        #value  = self.v(h_t).squeeze(-1)#state val
+        value  = self.v(h_t).squeeze(-1)        # ← remove tanh
+
+        return logits, value
+
+
+
+#class buffer(nn.Module):
+##basically the wrapper between mamba and PPO (and later Kalman)
+class DecoderAgent(nn.Module):
+    def __init__(self, d_in=8, d_model=128, depth=4, n_actions=2):
+        super().__init__()
+        self.backbone = MambaBackbone(d_in, d_model, depth)
+        self.Kalman=None    #only for now 
+        self.heads    = PolicyValue(d_model, n_actions)
+
+        self.cache = None
+    # NEW: clear caches between PPO minibatches to reduce memory pressure
+    def clear_cache(self):
+        self.cache = None
+
+
+    def begin_episode(self, B, device=None):  #moves cache states to device
+        if device is None:
+            device = next(self.parameters()).device
+        self.cache = self.backbone.allocate_cache(B)
+        cache=self.cache
+        moved = []
+        for conv_state, ssm_state in cache:
+            conv_state = conv_state.to(device)
+            ssm_state  = ssm_state.to(device)
+            moved.append((conv_state, ssm_state))
+        self.cache = moved
+
+    def act_opt(self, obs_t):                 # obs_t: (B, d_in) obs for round t, ideally float32 in [0,1]
+        x = obs_t[:, None, :]             # -> (B, 1, d_in)
+        device = next(self.backbone.parameters()).device
+        dtype = next(self.backbone.parameters()).dtype
+
+        x_t = x.to(device).to(dtype)
+        self.cache = [(conv_state.to(device), ssm_state.to(device)) for conv_state, ssm_state in self.cache]
+
+        h = self.backbone.mamba_step_opt(x_t, self.cache).squeeze(1)  # (B, d_model)
+        logits, value = self.heads(h)     # (B, A), (B,)
+        return logits, value, h    #we will use the logits to get the action that leads to reward and the value is the estimate that we'll use for GAE 
+
+    '''new for seq'''
+    def forward_seq(self, obs_seq):     # obs_seq: (B, T, d_in)
+        h_seq = self.backbone.forward_seq(obs_seq)      # (B,T,d_model)
+        logits_seq = self.heads.pi(h_seq)               # (B,T,A)
+        values_seq = self.heads.v(h_seq).squeeze(-1)    # (B,T)
+        return logits_seq, values_seq
+
+    @torch.no_grad()
+    def act(self, obs_t):                 # obs_t: (B, d_in) obs for round t, ideally float32 in [0,1]
+        x = obs_t[:, None, :]             # -> (B, 1, d_in)
+        device = next(self.backbone.parameters()).device
+        dtype = next(self.backbone.parameters()).dtype
+
+        x_t = x.to(device).to(dtype)
+        self.cache = [(conv_state.to(device), ssm_state.to(device)) for conv_state, ssm_state in self.cache]
+
+        h = self.backbone.mamba_step(x_t, self.cache).squeeze(1)  # (B, d_model)
+        logits, value = self.heads(h)     # (B, A), (B,)
+        return logits, value, h    #we will use the logits to get the action that leads to reward and the value is the estimate that we'll use for GAE 
+
+
+  #  def sample_from_logits(logits):
+
+
+# --- PPO Rollout Buffer -------------------------------------------------------
+from dataclasses import dataclass
+
+
+@dataclass
+class RolloutConfig:
+    '''changed!!! was 0.99'''
+    gamma: float = 0.99
+    gae_lambda: float = 0.95
+
+class RolloutBuffer:
+    """
+    Stores a short on-policy rollout (your episodes are length 9).
+    We store raw obs (so we can re-forward with grads), actions, logp, values, rewards.
+    """
+    def __init__(self, obs_dim: int, device: torch.device | str = "cuda"):
+      #  print('\ninitialized RolloutBuffer (PPO mem)!\n')
+        self.obs_dim = obs_dim
+        self.device = torch.device(device)
+        self.reset()
+
+    def reset(self):  #clears history
+        self.obs      = []
+        self.actions  = []
+        self.logp     = []
+        self.values   = []
+        self.rewards  = []
+        self.masks    = []  # 1.0 for not-done (you have fixed length = 9 -> all ones)
+        self._finalized = False
+
+    def add(self, obs_t: torch.Tensor, action_t: torch.Tensor,
+            logp_t: torch.Tensor, value_t: torch.Tensor, reward_t: torch.Tensor,
+            mask_t: torch.Tensor | None = None):
+        """
+        Shapes:
+          obs_t:    (B, obs_dim)  current observations,,,, noo its d_in (feature vector)
+          action_t: (B, ...)  (Discrete: (B,), MultiDiscrete: (B,D))   chosen actions
+          logp_t:   (B,)     log-prob of chosen action
+          value_t:  (B,)   critic value estimate
+          reward_t: (B,)    scalar (step) reward
+          mask_t:   (B,)  (default=1.0)    =1 if not done, 0 if ep ended
+        """
+        if mask_t is None:
+            mask_t = torch.ones_like(value_t, device=value_t.device)
+        self.obs.append(obs_t.detach())
+        self.actions.append(action_t.detach())
+        self.logp.append(logp_t.detach())
+        self.values.append(value_t.detach())
+        self.rewards.append(reward_t.detach())
+        self.masks.append(mask_t.detach())
+
+
+
+
+#the advantage tells us how much better an action is than average given the current state.
+#the finalize func computes Generalized Adv Est
+#adv=reward_curr + gamma*NextVal(est) - CurrVal(est) + gamma*lambda*next_adv !!!!!!
+#So GAE is basically an exponentially discounted sum of TD errors.
+    @torch.no_grad()
+    def finalize(self, cfg: RolloutConfig, last_value: torch.Tensor | None = None):
+        """
+        Compute advantages (GAE) and returns. If you pass last_value, it's V_{T+1};
+        else assumed 0 (end of episode).
+        """
+        assert not self._finalized, "Already finalized"
+        device = self.values[0].device
+        gamma, lam = cfg.gamma, cfg.gae_lambda
+
+        # Stack time-major
+        values  = torch.stack(self.values,  dim=0)        # (T,B)
+        rewards = torch.stack(self.rewards, dim=0)        # (T,B)
+        masks   = torch.stack(self.masks,   dim=0)        # (T,B)     #whether the ep is alive or not
+
+        T, B = rewards.shape
+        if last_value is None:
+            next_values = torch.zeros(B, device=device)
+        else:
+            next_values = last_value.detach()
+
+        adv = torch.zeros(B, device=device)
+        advs = []
+        for t in reversed(range(T)):
+            delta = rewards[t] + gamma * next_values * masks[t] - values[t]    #δ_t= r_t + γ*V_(t+1) - V_t
+            adv = delta + gamma * lam * masks[t] * adv                          #A_t=γλδ_(t+1)
+            advs.append(adv)
+            next_values = values[t]
+        advs.reverse()
+        advantages = torch.stack(advs, dim=0)             # (T,B)  A_t
+        returns = advantages + values                      # (T,B)  R_t   A_t=R_t-V_t
+
+        # Cache tensors for minibatching
+        self._obs     = torch.stack(self.obs,    dim=0)   # (T,B,obs_dim)
+     #   print(f'buffer obs of shape: {self._obs.shape}')
+        self._actions = self._stack_actions(self.actions) # time-major
+        self._logp    = torch.stack(self.logp,   dim=0)   # (T,B)
+        self._values  = values
+        self._advs    = advantages
+        self._rets    = returns
+
+        # Normalize advantages across the whole rollout (common PPO trick)
+        flat_advs = self._advs.flatten()
+        self._advs = (self._advs - flat_advs.mean()) / (flat_advs.std(unbiased=False) + 1e-8)
+        self._finalized = True
+
+
+    @torch.no_grad()
+    def finalize_seq(self, cfg: RolloutConfig, last_value: torch.Tensor | None = None):
+        """
+        Compute advantages (GAE) and returns. If you pass last_value, it's V_{T+1};
+        else assumed 0 (end of episode).
+        """
+        assert not self._finalized, "Already finalized"
+        device = self.values[0].device
+        gamma, lam = cfg.gamma, cfg.gae_lambda
+
+        # Stack time-major
+        values  = torch.stack(self.values,  dim=0)        # (T,B)
+        rewards = torch.stack(self.rewards, dim=0)        # (T,B)
+        masks   = torch.stack(self.masks,   dim=0)        # (T,B)     #whether the ep is alive or not
+        
+        
+        
+        values  = torch.nan_to_num(values,  nan=0.0, posinf=0.0, neginf=0.0)
+        rewards = torch.nan_to_num(rewards, nan=0.0, posinf=0.0, neginf=0.0)
+        masks   = torch.nan_to_num(masks,   nan=0.0, posinf=0.0, neginf=0.0)
+        masks   = torch.clamp(masks, 0.0, 1.0)
+
+
+
+        T, B = rewards.shape
+        if last_value is None:
+            next_values = torch.zeros(B, device=device)
+        else:
+            next_values = last_value.detach()
+
+        adv = torch.zeros(B, device=device)
+        advs = []
+        for t in reversed(range(T)):
+            delta = rewards[t] + gamma * next_values * masks[t] - values[t]    #δ_t= r_t + γ*V_(t+1) - V_t
+            adv = delta + gamma * lam * masks[t] * adv                          #A_t=γλδ_(t+1)
+            advs.append(adv)
+            next_values = values[t]
+        advs.reverse()
+        advantages = torch.stack(advs, dim=0)             # (T,B)  A_t
+        returns = advantages + values                      # (T,B)  R_t   A_t=R_t-V_t
+        
+        
+        advantages = torch.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0)
+        returns    = torch.nan_to_num(returns,    nan=0.0, posinf=0.0, neginf=0.0)
+
+        # normalize advantages safely
+        flat = advantages.flatten()
+        mean = flat.mean()
+        std  = flat.std(unbiased=False)
+
+        if not torch.isfinite(std) or std < 1e-6:
+            advantages = advantages - mean   # or just zeros_like(advantages)
+        else:
+            advantages = (advantages - mean) / (std + 1e-8)
+
+
+
+        # Cache tensors for minibatching
+        self._obs     = torch.stack(self.obs,    dim=0)   # (T,B,obs_dim)
+     #   print(f'buffer obs of shape: {self._obs.shape}')
+        self._actions = self._stack_actions(self.actions) # time-major
+        self._logp    = torch.stack(self.logp,   dim=0)   # (T,B)
+        self._values  = values
+        self._advs    = advantages
+        self._rets    = returns
+
+        # Normalize advantages across the whole rollout (common PPO trick)
+        #flat_advs = self._advs.flatten()
+       # self._advs = (self._advs - flat_advs.mean()) / (flat_advs.std(unbiased=False) + 1e-8)
+        self._finalized = True
+
+    def _stack_actions(self, acts_list):
+        # Supports Discrete (T*[B]) or MultiDiscrete (T*[B,D])
+        a0 = acts_list[0]
+        if a0.ndim == 1:
+            return torch.stack(acts_list, dim=0)          # (T,B)
+        elif a0.ndim == 2:
+            return torch.stack(acts_list, dim=0)          # (T,B,D)
+        else:
+            raise ValueError("Unexpected action ndim")
+
+    def iter_minibatches(self, batch_size: int, shuffle: bool = True):
+        """
+        Yields time×batch indices flattened into (T*B, ...).
+        """
+        assert self._finalized, "Call finalize() first"
+        T, B = self._logp.shape
+        N = T * B
+
+        idx = torch.arange(N)
+        if shuffle:
+            idx = idx[torch.randperm(N)]
+        for start in range(0, N, batch_size):
+            sl = idx[start:start+batch_size]
+            t = sl // B
+            b = sl % B
+            yield {
+                "obs":     self._obs[t, b, :],        # (bs, obs_dim)
+                "actions": self._gather_time_batch(self._actions, t, b),
+                "logp":    self._logp[t, b],
+                "values":  self._values[t, b],
+                "advs":    self._advs[t, b],
+                "rets":    self._rets[t, b],
+            }
+
+
+    '''new for seq'''
+    def iter_minibatches_seq(self, batch_B: int, shuffle: bool = True):
+        assert self._finalized
+        T, B = self._logp.shape
+
+        b_idx = torch.arange(B)
+        if shuffle:
+            b_idx = b_idx[torch.randperm(B)]
+
+        for start in range(0, B, batch_B):
+            bs = b_idx[start:start+batch_B]
+
+            # time-major -> batch-major
+            obs   = self._obs[:, bs, :].transpose(0, 1)      # (B_mb,T,d)
+            acts  = self._actions[:, bs].transpose(0, 1)     # (B_mb,T) or (B_mb,T,D)
+            oldlp = self._logp[:, bs].transpose(0, 1)        # (B_mb,T)
+            adv   = self._advs[:, bs].transpose(0, 1)        # (B_mb,T)
+            rets  = self._rets[:, bs].transpose(0, 1)        # (B_mb,T)
+
+            yield {"obs": obs, "actions": acts, "logp": oldlp, "advs": adv, "rets": rets}
+
+
+    def _gather_time_batch(self, tensor, t_idx, b_idx):
+        if tensor.ndim == 2:   # (T,B)
+            return tensor[t_idx, b_idx]
+        if tensor.ndim == 3:   # (T,B,D)
+            return tensor[t_idx, b_idx, :]
+        raise ValueError("Unsupported action tensor rank")
+
+    # Convenience getters (full, time-major)
+    @property
+    def T(self): return len(self.rewards)
+    @property
+    def B(self): return self.values[0].shape[0] if self.values else 0
+
+
+
+
+
+
+
+import numpy as np
+# --- Action → mask bridge -----------------------------------------------------
+def action_to_masks(
+    actions,
+    mode: str,
+    data_ids: np.ndarray | list,     # list of global qubit ids for data qubits
+    num_qubits: int,                 # total Q for FlipSimulator
+    shots: int,                      # S (batch size)
+    classes_per_qubit: int = 3      # 3 -> {I,X,Z}, 4 -> {I,X,Z,Y}
+):
+    """
+    Returns dict {'X': xmask, 'Z': zmask} with shape (Q, S) boolean arrays.
+    NOTE: We don't use Y directly; Y = X and Z bits set in same shot/qubit.
+    """
+    data_ids = np.asarray(list(map(int, data_ids)), dtype=int)
+    Q, S = int(num_qubits), int(shots)
+    xmask = np.zeros((Q, S), dtype=bool)
+    zmask = np.zeros((Q, S), dtype=bool)
+
+    if mode == "discrete":
+        # actions: (S,) integers in [0, 2*D], so if for example we have value 2 then at qubit 2 -> X
+        a = actions.detach().to("cpu").numpy().astype(int)  # (S,)
+        D = len(data_ids)
+        for s in range(S):
+            ai = a[s]
+            if ai == 0:
+                continue  # do-nothing
+            idx = ai - 1
+            q_local = idx // 2
+            p = idx % 2     # 0->X, 1->Z
+            if 0 <= q_local < D:
+                q_global = data_ids[q_local]
+                if p == 0: xmask[q_global, s] = True
+                else:      zmask[q_global, s] = True
+
+    elif mode == "multidiscrete":
+        # actions: (S, D) with values in {0=I,1=X,2=Z,(3=Y optional)}
+        a = actions.detach().to("cpu").numpy().astype(int)  # (S,D)
+        S_, D = a.shape
+        assert S_ == S
+        for q_local in range(D):
+            q_global = data_ids[q_local]
+            vals = a[:, q_local]   # (S,)
+            if classes_per_qubit == 4:
+                xmask[q_global, :] |= (vals == 1) | (vals == 3)
+                zmask[q_global, :] |= (vals == 2) | (vals == 3)
+            else:
+                xmask[q_global, :] |= (vals == 1)
+                zmask[q_global, :] |= (vals == 2)
+    else:
+        raise ValueError("mode must be 'discrete' or 'multidiscrete'")
+
+    return {"X": xmask, "Z": zmask}
+
+
+
+
+
+# --- Sampling helpers ---------------------------------------------------------
+import torch.nn.functional as F
+from torch.distributions import Categorical
+
+def _sanitize_logits(x: torch.Tensor) -> torch.Tensor:
+    # Work in float32 for numerical stability (avoid bf16/fp16 softmax pathologies)
+    x = x.float()
+    # Replace NaN/±inf with large finite numbers, then clamp
+    x = torch.nan_to_num(x, neginf=-1e9, posinf=1e9)
+    x = torch.clamp(x, min=-1e9, max=1e9)
+
+    # If an entire row was non-finite (now all -1e9), make it uniform (all zeros logits).
+    # Detect rows that are effectively "all masked": max very negative and variance ~0
+    row_bad = (x.max(dim=-1, keepdim=True).values < -1e8) | (x.var(dim=-1, keepdim=True) == 0)
+    x = torch.where(row_bad, torch.zeros_like(x), x)
+    return x
+
+def sample_from_logits(logits: torch.Tensor, mode: str):
+    """
+    mode:
+      - 'discrete'      : logits (B, A)
+      - 'multidiscrete' : logits (B, D, C)
+    Returns:
+      actions, logp   | (B,), (B,)   or   (B, D), (B,)
+    """
+    if mode == "discrete":
+        lg = _sanitize_logits(logits)
+        dist = Categorical(logits=lg, validate_args=False)  # skip strict Real() checks after sanitization
+        a    = dist.sample()
+        logp = dist.log_prob(a)
+        return a, logp
+
+    elif mode == "multidiscrete":
+        B, D, C = logits.shape
+        lg = _sanitize_logits(logits)
+        a_list, lp_list = [], []
+        for d in range(D):
+            dist = Categorical(logits=lg[:, d, :], validate_args=False)
+            a_d  = dist.sample()
+            lp_d = dist.log_prob(a_d)
+            a_list.append(a_d)
+            lp_list.append(lp_d)
+        actions = torch.stack(a_list, dim=1)          # (B, D)
+        logp    = torch.stack(lp_list, dim=1).sum(-1) # (B,)
+        return actions, logp
+
+    else:
+        raise ValueError("mode must be 'discrete' or 'multidiscrete'")
+
+
+
+
+
+import torch
+import torch.nn.functional as F
+from torch.distributions import Categorical
+
+@torch.no_grad()
+def _entropy_from_logits(logits: torch.Tensor) -> torch.Tensor:
+    # logits: (N, A)
+    dist = Categorical(logits=logits)
+    return dist.entropy()  # (N,)
+
+
+def get_entropy_coef(progress, ent0,ent_final):
+    warm = 0.25
+
+    if progress < warm:
+        return ent0
+    
+    # cosine annealing from ent0 -> ent_final
+    t = (progress - warm) / (1 - warm)
+    return ent_final + 0.5 * (ent0 - ent_final) * (1 + np.cos(np.pi * t))
+
+
+
+
+
+
+
+def optimize_ppo_1(
+    agent,
+    buf,
+    optimizer: torch.optim.Optimizer,
+    *,
+    clip_eps: float = 0.2,
+    epochs: int = 6,
+    batch_size: int = 256,
+    value_coef: float = 0.5,
+    entropy_coef: float = 1e-3,
+    max_grad_norm: float = 1.0,
+    # --- optional anneal inputs ---
+    update_idx: int | None = None,
+    total_updates: int | None = None,
+    entropy_coef_min: float = 1e-4,
+    kl_stop: float = 0.02,              # NEW: early-stop threshold per epoch
+    progress:float
+):
+    import math
+    import torch
+    import torch.nn.functional as F
+
+    device = next(agent.parameters()).device
+
+    # # cosine-annealed entropy coeff (episode/update-wise)
+    # if (update_idx is not None) and (total_updates is not None) and total_updates > 0:
+    #     cos_w = 0.5 * (1.0 + math.cos(math.pi * min(update_idx, total_updates) / total_updates))
+    #     entropy_coef_t = entropy_coef_min + (entropy_coef - entropy_coef_min) * cos_w
+    # else:
+    #     entropy_coef_t = entropy_coef
+    '''stage1'''
+    #ent_coef=entropy_coef
+    ent_coef=get_entropy_coef(progress=progress, ent0=entropy_coef, ent_final=entropy_coef_min)
+
+
+    stats = {
+        "loss_pi": 0.0, "loss_v": 0.0, "entropy": 0.0, "kl": 0.0,
+        "clip_frac": 0.0, "ev": 0.0, "grad_norm": 0.0, "logits_std": 0.0,
+        "count": 0,
+    }
+
+    # hard assert: params must be finite
+    for p in agent.parameters():
+        if not torch.isfinite(p).all():
+            print("[fatal] non-finite param detected before PPO step")
+            raise SystemExit
+
+    for _ in range(epochs):
+        epoch_stopped = False
+        c=0
+        for mb in buf.iter_minibatches_seq(batch_B=256, shuffle=True):  # 256 shots per minibatch
+            c+=1
+            obs   = mb["obs"].to(device)      # (B_mb,T,d)
+           #     obs = (obs - obs.mean(dim=(0,1), keepdim=True)) / (obs.std(dim=(0,1), keepdim=True) + 1e-6)
+
+            acts  = mb["actions"].to(device)  # (B_mb,T)
+            oldlp = mb["logp"].to(device)     # (B_mb,T)
+            adv   = mb["advs"].to(device)     # (B_mb,T)
+            rets  = mb["rets"].to(device)     # (B_mb,T)
+            rets = torch.clamp(rets, -10.0, 10.0)
+
+
+            if not torch.isfinite(obs).all():
+                print("[PPO] Non-finite obs detected!")
+                print("min:", obs.min(), "max:", obs.max())
+                raise RuntimeError("NaNs in PPO obs")
+
+            obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+            obs = torch.clamp(obs, -5.0, 5.0)
+            logits_seq, v_pred = agent.forward_seq(obs)    # (B_mb,T,A), (B_mb,T)
+
+        
+            # --- sanitize logits (DO THIS BEFORE Categorical) ---
+            logits_seq = logits_seq.float()
+            logits_seq = torch.nan_to_num(logits_seq, nan=0.0, posinf=1e6, neginf=-1e6)
+            logits_seq = torch.clamp(logits_seq, -30.0, 30.0)  # important
+
+               # Guard: logits must be finite
+            if not torch.isfinite(logits_seq).all():
+                nbad = (~torch.isfinite(logits_seq)).sum().item()
+                print(f"[warn] non-finite LOGITS in minibatch {nbad}; skipping")
+                #if hasattr(agent, "clear_cache"): agent.clear_cache()
+                continue
+ 
+         
+            dist  = torch.distributions.Categorical(logits=logits_seq)
+            logp  = dist.log_prob(acts.long())             # (B_mb,T)
+            ent   = dist.entropy()                         # (B_mb,T)
+            ent_mean = ent.mean()
+
+            ratio = (logp - oldlp).exp()                   # (B_mb,T)
+
+            unclipped = ratio * adv
+            clipped   = torch.clamp(ratio, 1-clip_eps, 1+clip_eps) * adv
+            loss_pi   = -torch.min(unclipped, clipped).mean()
+
+            loss_v    = torch.nn.functional.mse_loss(v_pred, rets)
+
+            loss = loss_pi + value_coef * loss_v - ent_coef * ent_mean
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+
+
+                    # --- your existing good stuff:
+            for p in agent.parameters():
+                if p.grad is not None:
+                    torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+            grad_norm=torch.nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
+            # (extra guard) if grad_norm is NaN, skip step
+            if not torch.isfinite(grad_norm):
+                print("[warn] non-finite grad_norm; skipping optimizer step")
+                optimizer.zero_grad(set_to_none=True)
+                continue
+
+            optimizer.step()
+
+
+            # Diagnostics (compute BEFORE potential early-stop, and count this mb)
+            with torch.no_grad():
+                approx_kl = (oldlp - logp).mean().item()
+                clip_frac = ((ratio > 1.0 + clip_eps) | (ratio < 1.0 - clip_eps)).float().mean().item()
+
+                var_returns = rets.var(unbiased=False)
+                ev = (1.0 - ((rets - v_pred).var(unbiased=False) / (var_returns + 1e-8))).item() if var_returns > 0 else 0.0
+
+                stats["loss_pi"]   += loss_pi.item()
+                stats["loss_v"]    += loss_v.item()
+                stats["entropy"]   += ent_mean.item()
+                stats["kl"]        += approx_kl
+                stats["clip_frac"] += clip_frac
+                stats["ev"]        += ev
+                stats["grad_norm"] += float(grad_norm)
+                stats["logits_std"]+= logits_seq.float().std().item()
+                stats["count"]     += 1
+
+            # Early-stop if KL is large (after counting this minibatch)
+            if approx_kl > kl_stop:
+                epoch_stopped = True
+                print(f'epoch stopped early because of kl_stop')
+                break
+
+        if epoch_stopped:
+            break
+
+    if stats["count"] > 0:
+        for k in ("loss_pi","loss_v","entropy","kl","clip_frac","ev","grad_norm","logits_std"):
+            stats[k] /= stats["count"]
+    else:
+        print("[warn] PPO update skipped: no valid minibatches")
+
+    stats["entropy_coef_used"] = ent_coef
+    return stats
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def optimize_ppo(
+    agent,
+    buf,
+    optimizer: torch.optim.Optimizer,
+    *,
+    clip_eps: float = 0.2,
+    epochs: int = 6,
+    batch_size: int = 1024,
+    value_coef: float = 0.5,
+    entropy_coef: float = 1e-3,
+    max_grad_norm: float = 1.0,
+    # --- optional anneal inputs ---
+    update_idx: int | None = None,
+    total_updates: int | None = None,
+    entropy_coef_min: float = 1e-4,
+    kl_stop: float = 0.03,              # NEW: early-stop threshold per epoch
+    progress:float
+):
+    import math
+    import torch
+    import torch.nn.functional as F
+
+    device = next(agent.parameters()).device
+
+    # # cosine-annealed entropy coeff (episode/update-wise)
+    # if (update_idx is not None) and (total_updates is not None) and total_updates > 0:
+    #     cos_w = 0.5 * (1.0 + math.cos(math.pi * min(update_idx, total_updates) / total_updates))
+    #     entropy_coef_t = entropy_coef_min + (entropy_coef - entropy_coef_min) * cos_w
+    # else:
+    #     entropy_coef_t = entropy_coef
+    '''stage1'''
+    #ent_coef=entropy_coef
+    ent_coef=get_entropy_coef(progress=progress, ent0=entropy_coef, ent_final=entropy_coef_min)
+
+
+    stats = {
+        "loss_pi": 0.0, "loss_v": 0.0, "entropy": 0.0, "kl": 0.0,
+        "clip_frac": 0.0, "ev": 0.0, "grad_norm": 0.0, "logits_std": 0.0,
+        "count": 0,
+    }
+
+    # hard assert: params must be finite
+    for p in agent.parameters():
+        if not torch.isfinite(p).all():
+            print("[fatal] non-finite param detected before PPO step")
+            raise SystemExit
+
+    for _ in range(epochs):
+        epoch_stopped = False
+        for mb_idx, mb in enumerate(buf.iter_minibatches(batch_size=batch_size, shuffle=True)):
+            obs   = mb["obs"].to(device)      # (n, d_in)
+            acts  = mb["actions"].to(device)  # (n,)
+            oldlp = mb["logp"].to(device)     # (n,)
+            adv   = mb["advs"].to(device)     # (n,)
+            rets  = mb["rets"].to(device)     # (n,)
+
+            # Guards: observations must be finite
+            if not torch.isfinite(obs).all():
+                nbad = (~torch.isfinite(obs)).sum().item()
+                print(f"[warn] non-finite OBS in minibatch {mb_idx}: {nbad} elements; skipping")
+                continue
+
+            # fresh recurrent cache for this minibatch
+            agent.begin_episode(B=obs.shape[0], device=device)
+            logits, v_pred, _ = agent.act_opt(obs)  # (n,A), (n,)
+
+            # Guard: logits must be finite
+            if not torch.isfinite(logits).all():
+                nbad = (~torch.isfinite(logits)).sum().item()
+                print(f"[warn] non-finite LOGITS in minibatch {mb_idx}: {nbad}; skipping")
+                if hasattr(agent, "clear_cache"): agent.clear_cache()
+                continue
+
+            # Build distribution and compute losses
+            dist    = torch.distributions.Categorical(logits=logits)
+            logp    = dist.log_prob(acts.long())
+            entropy = dist.entropy()                           # (n,)
+            ratio   = (logp - oldlp).exp()
+
+            unclipped = ratio * adv
+            clipped   = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv
+            loss_pi   = -torch.min(unclipped, clipped).mean()
+
+            loss_v    = F.mse_loss(v_pred, rets)
+
+            ent       = entropy.mean()
+            loss      = loss_pi + value_coef * loss_v - ent_coef * ent
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+
+            # guard grads
+            for p in agent.parameters():
+                if p.grad is not None:
+                    torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+            grad_norm = torch.nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
+            optimizer.step()
+
+            if hasattr(agent, "clear_cache"):
+                agent.clear_cache()
+
+            # Diagnostics (compute BEFORE potential early-stop, and count this mb)
+            with torch.no_grad():
+                approx_kl = (oldlp - logp).mean().clamp_min(0.0).item()
+                clip_frac = ((ratio > 1.0 + clip_eps) | (ratio < 1.0 - clip_eps)).float().mean().item()
+
+                var_returns = rets.var(unbiased=False)
+                ev = (1.0 - ((rets - v_pred).var(unbiased=False) / (var_returns + 1e-8))).item() if var_returns > 0 else 0.0
+
+                stats["loss_pi"]   += loss_pi.item()
+                stats["loss_v"]    += loss_v.item()
+                stats["entropy"]   += ent.item()
+                stats["kl"]        += approx_kl
+                stats["clip_frac"] += clip_frac
+                stats["ev"]        += ev
+                stats["grad_norm"] += float(grad_norm)
+                stats["logits_std"]+= logits.float().std().item()
+                stats["count"]     += 1
+
+            # Early-stop if KL is large (after counting this minibatch)
+            if approx_kl > kl_stop:
+                epoch_stopped = True
+                break
+
+        if epoch_stopped:
+            break
+
+    if stats["count"] > 0:
+        for k in ("loss_pi","loss_v","entropy","kl","clip_frac","ev","grad_norm","logits_std"):
+            stats[k] /= stats["count"]
+    else:
+        print("[warn] PPO update skipped: no valid minibatches")
+
+    stats["entropy_coef_used"] = ent_coef
+    return stats
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 from surface_code.code_generator import build_planar_surface_code
 import stim
 import numpy as np
@@ -639,9 +1529,10 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
             '''
             fv=feature_vector
             logits, V_t, h_t = agent.act(fv)  
-            
-
-
+            '''changed cause it should be the same as optimize_ppo'''  
+            # with torch.no_grad():
+            #     agent.begin_episode(B=B, device=device)  # even if cache unused, keep consistent
+            #     logits, V_t, h_t = agent.act_opt(fv)     # <-- instead of agent.act(fv)
             a_t, logp_t = sample_from_logits(logits, mode=mode)       # MultiDiscrete or Discrete policy
             a_t_cpu = a_t.detach().cpu()  #should be of size 2*d without zeros? 
             logp_t_cpu = logp_t.detach().cpu()
@@ -703,7 +1594,9 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
             obs_c_tensor=torch.from_numpy(obs_current).float().to(device)
             r_step_tensor=torch.from_numpy(r_step).float().to(device)
             r_step_tensor = torch.nan_to_num(r_step_tensor, nan=0.0, posinf=0.0, neginf=0.0)
+            # (optional) clip tiny range first days
             r_step_tensor = torch.clamp(r_step_tensor, -1.0, 1.0) #was in best
+        #  if ep==5: print(f'step reward: {r_step}')
 
             done_bool = (t == env.R - 1)          # shape: scalar bool
             done_mask = torch.zeros(B, device=device) if done_bool else torch.ones(B, device=device)
@@ -722,7 +1615,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
         final_rew=final_reward(obs_flips=obs_final)
         final_rew_tensor = torch.as_tensor(final_rew, dtype=torch.float32, device=device)
         final_rew_tensor = torch.nan_to_num(final_rew_tensor, nan=0.0, posinf=0.0, neginf=0.0)
-        final_rew_tensor = torch.clamp(final_rew_tensor, -1.0, 1.0)         #very important
+       # final_rew_tensor = torch.clamp(final_rew_tensor, -1.0, 1.0)         #oxi gia pnta
         buf.rewards[-1] = buf.rewards[-1] + final_rew_tensor
 
         det_count=np.stack([dets[a:b, :].sum(axis=0) for (a, b) in slices], axis=0)
@@ -770,15 +1663,13 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
 
         ''''changes'''
         bacth_size=2048
-        epos=2
-        clip_eps=0.04
-        ent_coef=3e-3
+        epos=1
         rewards_knobs={"alpha":rewards.ALPHA_CLEAR, "beta": rewards.BETA_PENALTY, "l_flip":rewards.LAMBDA_FLIP, "l_exc":rewards.LAMBDA_EXCESS, "budget":rewards.BUDGET_K}
         cfg_run={"reward_knobs":rewards_knobs, "marginal":0.001, "episodes":episodes,
-                 "clip_eps":clip_eps, "epochs":epos,"ent_coef":ent_coef , "adjustable_lr":1, "kl_stop":kl_stop, "batches":bacth_size}
+                 "clip_eps":0.04, "epochs":epos,"ent_coef":3e-3 , "adjustable_lr":1, "kl_stop":kl_stop, "batches":bacth_size}
 
         # ler is a scalar float, e.g. logical error rate for this episode
-        if float(ler) <= float(best_ler):
+        if float(ler) < float(best_ler):
             best_ler = ler
             if os.path.exists(best_ckpt_path):
                 os.remove(best_ckpt_path)
@@ -801,8 +1692,8 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
         """changed!!!!!11   epochs:2 batch:2048"""
         #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
         stats = optimize_ppo(agent, buf, optimizer,
-                        clip_eps=clip_eps, epochs=epos, batch_size=bacth_size,
-                        entropy_coef=ent_coef, entropy_coef_min=1e-4,
+                        clip_eps=0.04, epochs=epos, batch_size=bacth_size,
+                        entropy_coef=3e-3, entropy_coef_min=1e-4,
                         update_idx=ep, total_updates=episodes, progress=progress) 
         #, kl_stop=kl_stop
         ent_coef=stats["entropy_coef_used"]
@@ -910,7 +1801,7 @@ def eval_agent_fixed_seeds(seeds, env):
     print("================================\n")
 
 if __name__=='__main__':
-    episodes=300
+    episodes=160
     d_in=9
     env = StimDecoderEnv(circuit, data_qus, anc_ids, cx, rounds, slices)
 
@@ -919,7 +1810,7 @@ if __name__=='__main__':
     ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
     agent.load_state_dict(ckpt["policy_state_dict"])
     '''Distance 3 stage 2'''
-    # ckpt = torch.load("backups/stage2_d3_best_ler_0.0009765625_17:07.pt", map_location=device)
+    # ckpt = torch.load("backups/stage2_best.pt", map_location=device)
     # agent.load_state_dict(ckpt["agent"])
     '''Distance 5 stage 1'''
     # ckpt = torch.load("ppo_decoder_stage1_noiseless_distance5.pt", map_location=device)
@@ -955,15 +1846,15 @@ if __name__=='__main__':
     # eval_agent_noop=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
     # eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
 
-    # evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=10000, mode=mode, data_ids=data_ids, Q_total=Q_total)
+    # evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total)
 
 
     '''RUN NO ACTION + ACTION EVALUTAION'''
-    # eval_seeds = [7,12,33,40,41,3,24,18,29,50,60,61,77,101]
+    eval_seeds = [7,12,33,40,41,3,24,18,29,50,60,61,77,101]
 
-    # eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
-    # eval_agent_fixed_seeds(seeds=eval_seeds, env=eval_env)
-    # evaluate.evaal(ids=eval_seeds, seed=0, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total, strr="fixed-action")
+    eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
+    eval_agent_fixed_seeds(seeds=eval_seeds, env=eval_env)
+    evaluate.evaal(ids=eval_seeds, seed=0, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total, strr="fixed-action")
 
     '''Save Stage 1 policy'''
     # stage1_ckpt_path = "ppo_decoder_stage1_noiseless_distance5.pt"

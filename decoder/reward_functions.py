@@ -221,5 +221,5 @@ def final_reward(obs_flips: np.ndarray) -> np.ndarray:
     # For surface code memory: 1 observable = logical X/Z parity
     # If flip = 1 → logical error
     logical_error = obs_flips.sum(axis=0) > 0   # (S,)  #np.where(condition, A, B) → element-wise: if condition is True → take A else → take B
-    reward = np.where(logical_error, -5.0, +5.0)
+    reward = np.where(logical_error, -4.0, +4.0)
     return reward

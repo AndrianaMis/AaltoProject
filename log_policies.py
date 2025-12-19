@@ -1,7 +1,7 @@
 import os
 import torch
 
-path="backups/stage2_best.pt"
+path="stage2_d3_best_ler_0.0009765625_17:49.pt"
 
 checkpoint = torch.load(path, map_location="cpu")
 
