@@ -16,7 +16,7 @@ from decoder.KalMamba import DecoderAgent, RolloutBuffer, RolloutConfig
 from .helpers import extract_round_template_plus_suffix, does_action_mask_have_anything, find_neighboring_qubits
 import torch
 from decoder.decoder_helpers import StimDecoderEnv, det_syndrome_tensor, det_syndrome_sequence_for_shot, det_for_round
-from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits, optimize_ppo
+from decoder.KalMamba import MambaBackbone, action_to_masks, sample_from_logits, optimize_ppo, optimize_ppo_seq
 from decoder.reward_functions import step_reward, final_reward, round_overcorr_metrics_discrete
 from visuals.plots import plot_LERvsSTEPS, plot_step_reward_trends, plot_ev_kl_entropy, plot_loss_v_pi, plot_LER_rstep_finalr, plot_effectiveness, plot_coef
 import time
@@ -75,6 +75,10 @@ all_qubits=data_qus+anchs
 
 batch_marg=256
 iters_marg=25
+ # shots in parallel
+S=1024
+B=S
+mode="discrete"
 
 # weights = [0.25, 0.6, 0.1, 0.05]  # sums to 1.0
 # for k, wk in zip(("t1","t2","t3","t4"), (0.25, 0.6, 0.1, 0.05)):
@@ -128,7 +132,7 @@ for key in ("t1", "t2", "t3", "t4"):
 
 
 #---------------------------------  FlipSIm-------------------------------------------------
-def generate_M0(seed=None , S:int=1024):
+def generate_M0(seed=None , S:int=S):
     rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
     res = [
         mask_generator(
@@ -255,7 +259,7 @@ for key in ("t1", "t2", "t3", "t4"):
 
 
 #---------------------------------  FlipSIm-------------------------------------------------
-def generate_M1(seed=None, S:int=1024):
+def generate_M1(seed=None, S:int=S):
     rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
 
     res = [
@@ -371,7 +375,7 @@ cat_counts=[0, 0, 0, 0]
 
 
 #print(f'M2: \n{M2[:,:,1]}')
-def generate_M2(seed=None, S:int=1024):
+def generate_M2(seed=None, S:int=S):
     rng = np.random.default_rng(seed) if seed is not None else np.random.default_rng()
 
     res = [
@@ -530,9 +534,6 @@ for (a, b) in slices:
 
 all_qids = list(data_qus) + list(anchs)
 Q_total = max([0] + all_qids)
-B = 1024  # shots in parallel
-S=1024
-mode="discrete"
 
 
 
@@ -783,7 +784,7 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
             if os.path.exists(best_ckpt_path):
                 os.remove(best_ckpt_path)
 
-            best_ckpt_path = f"stage2_d3_best_ler_{best_ler}_{str(check_time)}.pt"
+            best_ckpt_path = f"stage2_d3_ler_{best_ler}_{str(check_time)}.pt"
 
             torch.save(
                 {"agent": agent.state_dict(),
@@ -798,12 +799,18 @@ def train_agent(agent: DecoderAgent, env:StimDecoderEnv, episodes:int,
 
 
 
-        """changed!!!!!11   epochs:2 batch:2048"""
-        #print(f'obs in the buffer: {len(buf.obs)}')   buffer obs of shape: torch.Size([9, 1024, 9])
+        '''non sequantial'''
         stats = optimize_ppo(agent, buf, optimizer,
                         clip_eps=clip_eps, epochs=epos, batch_size=bacth_size,
                         entropy_coef=ent_coef, entropy_coef_min=1e-4,
                         update_idx=ep, total_updates=episodes, progress=progress) 
+        '''sequantial'''
+        # stats=optimize_ppo_seq(agent, buf, optimizer,
+        #                 clip_eps=clip_eps, epochs=epos, 
+        #                 entropy_coef=ent_coef, entropy_coef_min=1e-4,
+        #                 progress=progress)
+        
+
         #, kl_stop=kl_stop
         ent_coef=stats["entropy_coef_used"]
         entropy_coefs.append(ent_coef)
@@ -916,11 +923,11 @@ if __name__=='__main__':
 
     agent=DecoderAgent(d_in=d_in, n_actions=2*len(data_qus) +1).to(device)
     '''Distance 3 stage 1'''
-    ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
-    agent.load_state_dict(ckpt["policy_state_dict"])
+    # ckpt = torch.load("ppo_decoder_stage1_noiseless.pt", map_location=device)
+    # agent.load_state_dict(ckpt["policy_state_dict"])
     '''Distance 3 stage 2'''
-    # ckpt = torch.load("backups/stage2_d3_best_ler_0.0009765625_17:07.pt", map_location=device)
-    # agent.load_state_dict(ckpt["agent"])
+    ckpt = torch.load("stage2_d3_ler_0.0009765625_11:52.pt", map_location=device)
+    agent.load_state_dict(ckpt["agent"])
     '''Distance 5 stage 1'''
     # ckpt = torch.load("ppo_decoder_stage1_noiseless_distance5.pt", map_location=device)
     # agent.load_state_dict(ckpt["policy_state_dict"])
@@ -949,13 +956,13 @@ if __name__=='__main__':
     optimizer = torch.optim.Adam(optim_groups, betas=(0.9, 0.999), eps=1e-8)
 
 
-    train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed, obs_dim=d_in)    #with action
+    # train_agent(agent=agent, env=env, episodes=episodes, optimizer=optimizer, base_seed=base_seed, obs_dim=d_in)    #with action
 
     
-    # eval_agent_noop=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
-    # eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
+    eval_agent_noop=DecoderAgent(d_in=9, n_actions=2*len(data_qus) +1).to(device)
+    eval_env=StimDecoderEnv(circuit=circuit,data_ids=data_qus,anc_ids= anc_ids, gate_pairs=cx, rounds=rounds, round_slices=slices)
 
-    # evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=10000, mode=mode, data_ids=data_ids, Q_total=Q_total)
+    evaluate.evaluate_agent(train_seed=base_seed, eval_seed=eval_seed, env=eval_env, device=device, agent=agent, S=S, mode=mode, data_ids=data_ids, Q_total=Q_total)
 
 
     '''RUN NO ACTION + ACTION EVALUTAION'''

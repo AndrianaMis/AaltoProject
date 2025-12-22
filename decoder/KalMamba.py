@@ -41,6 +41,11 @@ class MambaBackbone(nn.Module):
         for ly in self.layers:
             h = ly(h)                              # <- differentiable forward
         return self.norm(h)  
+    def mamba_forward(self, x):  # x: (B, T, d_in)
+        h = self.in_proj(x)      # (B, T, d_model)
+        for ly in self.layers:
+            h = ly(h)            # MUST be full-sequence forward
+        return self.norm(h)      # (B, T, d_model)
 
     @torch.no_grad()
     def mamba_step(self, x_t, cache):          # x_t: (B, 1, d_in) single round obs, cache is the hidden states from prevs
@@ -105,7 +110,24 @@ class DecoderAgent(nn.Module):
         logits, value = self.heads(h)     # (B, A), (B,)
         return logits, value, h    #we will use the logits to get the action that leads to reward and the value is the estimate that we'll use for GAE 
 
+    def act_seq_opt(self, obs_seq):  # obs_seq: (T, B, d_in) OR (B, T, d_in)
+        device = next(self.parameters()).device
+        dtype  = next(self.parameters()).dtype
 
+        # expect (T,B,d)
+        assert obs_seq.dim() == 3
+        T, B, d = obs_seq.shape
+        x = obs_seq.permute(1,0,2).to(device=device, dtype=torch.float32)  # (B,T,d)
+
+       # x = obs_seq.to(device=device, dtype=dtype)     # (B,T,d_in)
+        h = self.backbone.mamba_forward(x)             # (B,T,d_model)
+
+        B, T, D = h.shape
+        h_flat = h.reshape(B*T, D)
+        logits_flat, value_flat = self.heads(h_flat)   # (B*T,A), (B*T,)
+        logits = logits_flat.view(B, T, -1).permute(1, 0, 2)  # (T,B,A)
+        value  = value_flat.view(B, T).permute(1, 0)          # (T,B)
+        return logits, value
 
 
     @torch.no_grad()
@@ -122,7 +144,6 @@ class DecoderAgent(nn.Module):
         return logits, value, h    #we will use the logits to get the action that leads to reward and the value is the estimate that we'll use for GAE 
 
 
-  #  def sample_from_logits(logits):
 
 
 # --- PPO Rollout Buffer -------------------------------------------------------
@@ -262,6 +283,39 @@ class RolloutBuffer:
                 "advs":    self._advs[t, b],
                 "rets":    self._rets[t, b],
             }
+
+
+    def iter_seq_minibatches(self, mb_shots: int, shuffle: bool = True):
+        """
+        Yields minibatches over SHOTS, keeping full sequence length T.
+        Returns dict with tensors:
+        obs:   (T, Mb, obs_dim)
+        actions/logp/advs/rets: (T, Mb)
+        """
+        import torch
+
+        # stack time-major
+        obs  = self._obs
+        acts = self._actions
+        logp = self._logp
+        advs  = self._advs                       # expect (T,B)
+        rets  = self._rets                       # expect (T,B)
+
+        T, B = logp.shape[:2]
+        idx = torch.randperm(B) if shuffle else torch.arange(B)
+
+        for i in range(0, B, mb_shots):
+            b_idx = idx[i:i+mb_shots]
+            yield {
+                "obs": obs[:, b_idx, :],
+                "actions": acts[:, b_idx],
+                "logp": logp[:, b_idx],
+                "advs": advs[:, b_idx],
+                "rets": rets[:, b_idx],
+            }
+
+
+
 
     def _gather_time_batch(self, tensor, t_idx, b_idx):
         if tensor.ndim == 2:   # (T,B)
@@ -550,6 +604,137 @@ def optimize_ppo(
             stats[k] /= stats["count"]
     else:
         print("[warn] PPO update skipped: no valid minibatches")
+
+    stats["entropy_coef_used"] = ent_coef
+    return stats
+
+def optimize_ppo_seq(
+    agent,
+    buf,
+    optimizer,
+    *,
+    clip_eps=0.2,
+    epochs=6,
+    mb_shots=128,              # <-- THIS replaces batch_size
+    value_coef=0.5,
+    entropy_coef=1e-3,
+    max_grad_norm=1.0,
+    entropy_coef_min=1e-4,
+    kl_stop=0.03,
+    progress: float = 0.0,
+):
+    import torch
+    import torch.nn.functional as F
+
+    device = next(agent.parameters()).device
+    ent_coef = get_entropy_coef(progress=progress, ent0=entropy_coef, ent_final=entropy_coef_min)
+
+    stats = {k: 0.0 for k in ["loss_pi","loss_v","entropy","kl","clip_frac","ev","grad_norm","logits_std"]}
+    stats["count"] = 0
+
+    # hard assert: params finite
+    for p in agent.parameters():
+        if not torch.isfinite(p).all():
+            print("[fatal] non-finite param detected before PPO step")
+            raise SystemExit
+
+   
+    for _ in range(epochs):
+        epoch_stopped = False
+
+        for mb_idx, mb in enumerate(buf.iter_seq_minibatches(mb_shots=mb_shots, shuffle=True)):
+            obs   = mb["obs"].to(device)      # (T,Mb,obs_dim)
+            acts  = mb["actions"].to(device)  # (T,Mb)
+            oldlp = mb["logp"].to(device)     # (T,Mb)
+            adv   = mb["advs"].to(device)     # (T,Mb)
+            rets  = mb["rets"].to(device)     # (T,Mb)
+
+            if not torch.isfinite(obs).all():
+                print(f"[warn] non-finite OBS in seq minibatch {mb_idx}; skipping")
+                continue
+
+            T, Mb = oldlp.shape
+            T, _=adv.shape
+
+            # reset recurrent state ONCE per sequence minibatch
+            agent.begin_episode(B=Mb, device=device)
+
+            
+            # run sequentially to let Mamba use memory
+            logits_seq, vpred_seq = agent.act_seq_opt(obs)  # logits: (T,Mb,A), vpred: (T,Mb)
+
+
+            if not torch.isfinite(logits_seq).all():
+                n_nan = torch.isnan(logits_seq).sum().item()
+                n_inf = torch.isinf(logits_seq).sum().item()
+                print(f"[warn] non-finite LOGITS_SEQ: nan={n_nan} inf={n_inf} (mb={mb_idx}); skipping")
+                if hasattr(agent, "clear_cache"): agent.clear_cache()
+                continue
+            # logits_seq = torch.nan_to_num(logits_seq, nan=0.0, posinf=1e6, neginf=-1e6).clamp(-1e6, 1e6)
+
+            logits_seq = logits_seq.float()
+
+            dist = torch.distributions.Categorical(logits=logits_seq)
+            logp_new = dist.log_prob(acts.long())           # (T,Mb)
+            entropy  = dist.entropy()                       # (T,Mb)
+
+            if logits_seq is None:
+                continue
+
+            
+            ratio = (logp_new - oldlp).exp()
+
+            unclipped = ratio * adv
+            clipped   = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * adv
+            loss_pi   = -torch.min(unclipped, clipped).mean()
+
+            loss_v    = F.mse_loss(vpred_seq, rets)
+
+            ent       = entropy.mean()
+            loss      = loss_pi + value_coef * loss_v - ent_coef * ent
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+
+            for p in agent.parameters():
+                if p.grad is not None:
+                    torch.nan_to_num_(p.grad, nan=0.0, posinf=0.0, neginf=0.0)
+
+            grad_norm = torch.nn.utils.clip_grad_norm_(agent.parameters(), max_grad_norm)
+            optimizer.step()
+
+            if hasattr(agent, "clear_cache"):
+                agent.clear_cache()
+
+            with torch.no_grad():
+                approx_kl = (oldlp - logp_new).mean().clamp_min(0.0).item()
+                clip_frac = ((ratio > 1.0 + clip_eps) | (ratio < 1.0 - clip_eps)).float().mean().item()
+
+                var_returns = rets.var(unbiased=False)
+                ev = (1.0 - ((rets - vpred_seq).var(unbiased=False) / (var_returns + 1e-8))).item() if var_returns > 0 else 0.0
+
+                stats["loss_pi"]   += loss_pi.item()
+                stats["loss_v"]    += loss_v.item()
+                stats["entropy"]   += ent.item()
+                stats["kl"]        += approx_kl
+                stats["clip_frac"] += clip_frac
+                stats["ev"]        += ev
+                stats["grad_norm"] += float(grad_norm)
+                stats["logits_std"]+= logits_seq.float().std().item()
+                stats["count"]     += 1
+
+            if approx_kl > kl_stop:
+                epoch_stopped = True
+                break
+
+        if epoch_stopped:
+            break
+
+    if stats["count"] > 0:
+        for k in ("loss_pi","loss_v","entropy","kl","clip_frac","ev","grad_norm","logits_std"):
+            stats[k] /= stats["count"]
+    else:
+        print("[warn] PPO update skipped: no valid seq minibatches")
 
     stats["entropy_coef_used"] = ent_coef
     return stats
